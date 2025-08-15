@@ -29,9 +29,9 @@ class Yolo_Node(Node):
         self.get_logger().info(f"Confidence threshold for class ID 1 set to: {self.class_1_conf_threshold}")
 
         # 시각화 옵션
-        self.declare_parameter('show_visualization', True)
-        self.declare_parameter('show_labels', True)
-        self.declare_parameter('show_conf', True)
+        self.declare_parameter('show_visualization', False)
+        self.declare_parameter('show_labels', False)
+        self.declare_parameter('show_conf', False)
         #---------------------------------------------
 
 

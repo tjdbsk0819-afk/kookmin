@@ -29,6 +29,7 @@ setup(
             'integrated_stanley_controller = cam.Integrated_Stanley_Controller:main',
             'adjustable_stanley_controller = cam.Adjustable_Stanley_Controller:main',
             'yolo_node = cam.yolo_node:main',
+            'centerlane_tracer = cam.centerlane_tracer:main',
         ],
     },
 )
