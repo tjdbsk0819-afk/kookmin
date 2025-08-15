@@ -28,6 +28,8 @@ if(BUILD_TESTING)
 endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/Point2D.msg"
+  "msg/Curve.msg"
   "msg/Detection.msg"
   "msg/Detections.msg"
   DEPENDENCIES std_msgs

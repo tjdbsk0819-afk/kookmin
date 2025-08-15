@@ -30,6 +30,7 @@ setup(
             'adjustable_stanley_controller = cam.Adjustable_Stanley_Controller:main',
             'yolo_node = cam.yolo_node:main',
             'centerlane_tracer = cam.centerlane_tracer:main',
+            'curve_subscriber = cam.curve_subscriber:main',
         ],
     },
 )
