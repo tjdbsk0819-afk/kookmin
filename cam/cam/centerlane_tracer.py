@@ -11,31 +11,20 @@ from cam_interfaces.msg import Detections
 import message_filters
 import math
 
+from scipy.interpolate import splprep, splev
+
 class CenterlaneTracer(Node):
     """
-    대표점들을 이용해 조각별 3차 베지어 곡선(Piecewise Cubic Bezier)을 생성하여
-    매끄러운 차선을 추정하고 시각화합니다.
+    대표점들에 대해 적응형 곡선 피팅을 수행하고,
+    실시간 파라미터 조정을 위한 트랙바와 디버그 창을 제공합니다.
     """
     def __init__(self):
         super().__init__('centerlane_tracer')
 
-        # --- Configuration ---
         self.HEIGHT_THRESHOLD = 220
         self.debug = True
-        # 트랙바 초기값 설정
-        self.initial_block_size_track = 8
-        self.initial_c_constant_track = 16
-        self.initial_num_points_track = 4
-        self.initial_min_spacing_track = 14
-        self.initial_bezier_scale_track = 8 # <<-- [추가] 베지어 스케일
-        # ---------------------
-
         self.bridge = CvBridge()
-        self.adaptive_block_size = 19
-        self.adaptive_c = -9
-        self.num_points_to_extract = 5
-        self.min_point_spacing = 14
-        self.bezier_scale_factor = 8.0 # <<-- [추가]
+        self.current_frame = None
 
         self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw')
         self.yolo_subscription = message_filters.Subscriber(self, Detections, '/yolo_detections')
@@ -44,172 +33,234 @@ class CenterlaneTracer(Node):
             queue_size=10, slop=0.1
         )
         self.time_synchronizer.registerCallback(self.synchronized_callback)
-        
+
         if self.debug:
             self.main_window_name = 'Centerlane Tracer'
-            self.thresh_window_name = 'Thresholded Image'
+            self.debug_window_names = ['Grayscale (AdaptiveThresh)', 'Canny Edges', 'Hough Lines']
             cv2.namedWindow(self.main_window_name, cv2.WINDOW_AUTOSIZE)
-            cv2.namedWindow(self.thresh_window_name, cv2.WINDOW_AUTOSIZE)
+            for name in self.debug_window_names:
+                cv2.namedWindow(name, cv2.WINDOW_NORMAL)
 
-            cv2.createTrackbar('Block Size', self.thresh_window_name, self.initial_block_size_track, 25, self.on_params_change)
-            cv2.createTrackbar('C Constant', self.thresh_window_name, self.initial_c_constant_track, 50, self.on_params_change)
-            cv2.createTrackbar('Num Points', self.thresh_window_name, self.initial_num_points_track, 19, self.on_params_change)
-            cv2.createTrackbar('Min Spacing', self.thresh_window_name, self.initial_min_spacing_track, 50, self.on_params_change)
-            cv2.createTrackbar('Bezier Scale', self.thresh_window_name, self.initial_bezier_scale_track, 200, self.on_params_change) # <<-- [추가]
-            self.on_params_change(0)
-            self.get_logger().info("Debug mode ON. Using Piecewise Bezier Curve Model.")
+            cv2.setMouseCallback(self.main_window_name, self.mouse_event_callback)
+
+            def nothing(x): pass
+            cv2.createTrackbar('Adapt Method', self.main_window_name, 1, 1, nothing)
+            cv2.createTrackbar('Block Size', self.main_window_name, 5, 20, nothing)
+            cv2.createTrackbar('C Constant', self.main_window_name, 5, 50, nothing)
+            cv2.createTrackbar('Canny Thresh1', self.main_window_name, 50, 255, nothing)
+            cv2.createTrackbar('Canny Thresh2', self.main_window_name, 150, 255, nothing)
+            cv2.createTrackbar('Hough Threshold', self.main_window_name, 20, 100, nothing)
+            cv2.createTrackbar('Hough MinLineLength', self.main_window_name, 20, 100, nothing)
+            cv2.createTrackbar('Hough MaxLineGap', self.main_window_name, 5, 100, nothing)
+            # [수정] 거리 유사성 임계값 트랙바 추가 (0~50 픽셀)
+            cv2.createTrackbar('Similarity Thresh', self.main_window_name, 25, 50, nothing)
+
+            self.get_logger().info("Debug mode ON. Using Adaptive Curve Fitting Model.")
 
         self.get_logger().info('CenterlaneTracer has been started.')
-    
-    def on_params_change(self, _):
-        block_size_track = cv2.getTrackbarPos('Block Size', self.thresh_window_name)
-        self.adaptive_block_size = 2 * block_size_track + 3
-        c_constant_track = cv2.getTrackbarPos('C Constant', self.thresh_window_name)
-        self.adaptive_c = c_constant_track - 25
-        num_points_track = cv2.getTrackbarPos('Num Points', self.thresh_window_name)
-        self.num_points_to_extract = num_points_track + 1
-        self.min_point_spacing = cv2.getTrackbarPos('Min Spacing', self.thresh_window_name)
-        self.bezier_scale_factor = cv2.getTrackbarPos('Bezier Scale', self.thresh_window_name) # <<-- [추가]
 
-    def draw_points(self, image, points, radius=3, color=(0, 0, 255)):
-        for point in points:
-            cv2.circle(image, (int(point[0]), int(point[1])), radius, color, -1)
-
-    def draw_curve(self, image, curve_points, color=(255, 0, 255), thickness=2):
-        if curve_points is None or len(curve_points) == 0:
-            return
-        pts = np.array(curve_points, dtype=np.int32).reshape((-1, 1, 2))
-        cv2.polylines(image, [pts], isClosed=False, color=color, thickness=thickness)
-
-    # <<-- [추가] 베지어 곡선 관련 헬퍼 함수 ---
-    def get_tangents(self, points):
-        """각 점에서 부드럽게 이어지는 접선 벡터들을 계산합니다."""
-        tangents = []
-        n = len(points)
-        for i in range(n):
-            if i == 0: # 시작점
-                tangent = (points[i+1] - points[i])
-            elif i == n - 1: # 끝점
-                tangent = (points[i] - points[i-1])
-            else: # 중간점
-                tangent = (points[i+1] - points[i-1])
-            
-            # 벡터 정규화
-            norm = np.linalg.norm(tangent)
-            if norm > 0:
-                tangents.append(tangent / norm)
-            else:
-                tangents.append(np.array([0.0, 0.0]))
-        return tangents
-
-    def get_bezier_segment(self, p0, p1, t0, t1, scale_factor):
-        """두 점과 양 끝의 접선 벡터로 3차 베지어 곡선 점들을 계산합니다."""
-        # 제어점 계산
-        cp1 = p0 + t0 * scale_factor
-        cp2 = p1 - t1 * scale_factor
-        
-        points = []
-        for t in np.linspace(0, 1, 25): # 한 세그먼트당 25개 점 생성
-            pt = (1-t)**3 * p0 + 3*(1-t)**2 * t * cp1 + 3*(1-t) * t**2 * cp2 + t**3 * p1
-            points.append(pt)
-        return points
-    # ---------------------------------------------
+    def mouse_event_callback(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN and self.current_frame is not None:
+            bgr_pixel = self.current_frame[y, x]
+            hsv_pixel = cv2.cvtColor(np.uint8([[bgr_pixel]]), cv2.COLOR_BGR2HSV)[0][0]
+            self.get_logger().info(f'Click at ({x}, {y}) | BGR: {bgr_pixel} -> HSV: {hsv_pixel}')
 
     def synchronized_callback(self, image_msg, yolo_msg):
         if not self.debug: return
         try:
             frame = self.bridge.imgmsg_to_cv2(image_msg, 'bgr8')
+            self.current_frame = frame.copy()
         except Exception as e:
             self.get_logger().error(f'Failed to convert image: {e}')
             return
 
-        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        thresh_frame = cv2.adaptiveThreshold(
-            gray_frame, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
-            cv2.THRESH_BINARY, self.adaptive_block_size, self.adaptive_c)
+        adapt_method_val = cv2.getTrackbarPos('Adapt Method', self.main_window_name)
+        block_size_val = cv2.getTrackbarPos('Block Size', self.main_window_name)
+        c_constant_val = cv2.getTrackbarPos('C Constant', self.main_window_name)
 
-        filtered_detections = [det for det in yolo_msg.detections if det.class_name == 'center_line' and det.ymax > self.HEIGHT_THRESHOLD]
-        
+        params = {
+            'adapt_method': cv2.ADAPTIVE_THRESH_GAUSSIAN_C if adapt_method_val == 1 else cv2.ADAPTIVE_THRESH_MEAN_C,
+            'block_size': block_size_val * 2 + 3,
+            'c_constant': c_constant_val - 25,
+            'canny_thresh1': cv2.getTrackbarPos('Canny Thresh1', self.main_window_name),
+            'canny_thresh2': cv2.getTrackbarPos('Canny Thresh2', self.main_window_name),
+            'hough_threshold': cv2.getTrackbarPos('Hough Threshold', self.main_window_name),
+            'hough_min_len': cv2.getTrackbarPos('Hough MinLineLength', self.main_window_name),
+            'hough_max_gap': cv2.getTrackbarPos('Hough MaxLineGap', self.main_window_name),
+            # [수정] 트랙바에서 거리 유사성 임계값 읽기
+            'similarity_thresh': cv2.getTrackbarPos('Similarity Thresh', self.main_window_name),
+        }
+
+        filtered_detections = [
+            det for det in yolo_msg.detections
+            if det.class_name == 'center_line' and det.ymax > self.HEIGHT_THRESHOLD
+        ]
+
+        all_rep_points_unsorted, lines_to_draw, debug_images = self._extract_representative_points(frame, filtered_detections, params)
+
+        # [수정] 정렬 함수에 params 전달
+        sorted_rep_points = self._sort_representative_points(all_rep_points_unsorted, params)
+        curve_points_to_draw = self.fit_adaptive_curve(sorted_rep_points)
+        self.visualize_results(frame, filtered_detections, sorted_rep_points, curve_points_to_draw, lines_to_draw)
+
+        for name, img in zip(self.debug_window_names, debug_images):
+            if img is not None:
+                cv2.imshow(name, img)
+
+    def _extract_representative_points(self, frame, detections, params):
         all_rep_points = []
-        # ... (대표점 추출 및 필터링 로직은 이전과 동일)
-        for det in filtered_detections:
+        lines_to_draw = []
+        h, w, _ = frame.shape
+        debug_gray = np.zeros((h, w), dtype=np.uint8)
+        debug_canny = np.zeros((h, w), dtype=np.uint8)
+        debug_hough = np.zeros((h, w, 3), dtype=np.uint8)
+
+        if not detections:
+            return all_rep_points, lines_to_draw, [debug_gray, debug_canny, debug_hough]
+
+        for det in detections:
             x1, y1, x2, y2 = map(int, [det.xmin, det.ymin, det.xmax, det.ymax])
-            box_w, box_h = x2 - x1, y2 - y1
-            roi = thresh_frame[y1:y2, x1:x2]
-            points_in_box = []
-            if cv2.countNonZero(roi) > 0:
-                num_pts = self.num_points_to_extract
-                if box_w >= box_h:
-                    for i in range(1, num_pts + 1):
-                        x_local = int(box_w * i / (num_pts + 1))
-                        ys_in_col = np.where(roi[:, x_local] == 255)[0]
-                        if len(ys_in_col) > 0:
-                            points_in_box.append((x1 + x_local, y1 + np.mean(ys_in_col)))
-                else:
-                    for i in range(1, num_pts + 1):
-                        y_local = int(box_h * i / (num_pts + 1))
-                        xs_in_row = np.where(roi[y_local, :] == 255)[0]
-                        if len(xs_in_row) > 0:
-                            points_in_box.append((x1 + np.mean(xs_in_row), y1 + y_local))
-            else:
-                points_in_box.append(((x1 + x2) / 2, (y1 + y2) / 2))
+            y1, y2 = max(0, y1), min(h, y2)
+            x1, x2 = max(0, x1), min(w, x2)
+            if y1 >= y2 or x1 >= x2: continue
 
-            if len(points_in_box) > 1:
-                points_in_box.sort(key=lambda p: p[1])
-                filtered_points = [points_in_box[0]]
-                last_kept_point = points_in_box[0]
-                for i in range(1, len(points_in_box)):
-                    current_point = points_in_box[i]
-                    dist = math.sqrt((current_point[0] - last_kept_point[0])**2 + (current_point[1] - last_kept_point[1])**2)
-                    if dist > self.min_point_spacing:
-                        filtered_points.append(current_point)
-                        last_kept_point = current_point
-                points_in_box = filtered_points
-            all_rep_points.extend(points_in_box)
+            roi = self.current_frame[y1:y2, x1:x2]
+            gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            thresh_roi = cv2.adaptiveThreshold(gray_roi, 255,
+                                               params['adapt_method'],
+                                               cv2.THRESH_BINARY,
+                                               params['block_size'],
+                                               params['c_constant'])
+            edges = cv2.Canny(thresh_roi, params['canny_thresh1'], params['canny_thresh2'], apertureSize=3)
+            lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=params['hough_threshold'], minLineLength=params['hough_min_len'], maxLineGap=params['hough_max_gap'])
 
-        # --- 베지어 곡선 피팅 로직 ---
-        curve_points_to_draw = []
-        if len(all_rep_points) >= 2:
-            # y좌표 기준 오름차순 정렬 (위->아래)
-            all_rep_points.sort(key=lambda p: p[1])
-            points_np = np.array(all_rep_points)
+            debug_gray[y1:y2, x1:x2] = thresh_roi
+            debug_canny[y1:y2, x1:x2] = edges
+            hough_roi_vis = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+            if lines is not None:
+                for line in lines:
+                    lx1, ly1, lx2, ly2 = line[0]
+                    cv2.line(hough_roi_vis, (lx1, ly1), (lx2, ly2), (0, 255, 0), 2)
+            debug_hough[y1:y2, x1:x2] = hough_roi_vis
+
+            found_hough_points = False
+            if lines is not None:
+                longest_line, max_len_sq = None, 0
+                for line in lines:
+                    lx1, ly1, lx2, ly2 = line[0]
+                    current_len_sq = (lx2 - lx1)**2 + (ly2 - ly1)**2
+                    if current_len_sq > max_len_sq:
+                        max_len_sq = current_len_sq
+                        longest_line = (lx1 + x1, ly1 + y1, lx2 + x1, ly2 + y1)
+
+                if longest_line:
+                    intersections = self._get_line_bbox_intersections(longest_line, (x1, y1, x2, y2))
+                    if len(intersections) == 2:
+                        all_rep_points.extend(intersections)
+                        lines_to_draw.append(intersections)
+                        found_hough_points = True
+
+            if not found_hough_points:
+                center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+                all_rep_points.append((center_x, center_y))
+                self.get_logger().warn(f"Hough failed for box at ({x1},{y1}). Using center point as fallback.")
+
+        return all_rep_points, lines_to_draw, [debug_gray, debug_canny, debug_hough]
+
+    # [수정] params 딕셔너리를 인자로 받도록 변경
+    def _sort_representative_points(self, points, params):
+        if len(points) < 2:
+            return points
+
+        remaining_points = points.copy()
+        
+        start_point = max(remaining_points, key=lambda p: p[1])
+        
+        sorted_points = [start_point]
+        remaining_points.remove(start_point)
+        current_point = start_point
+
+        while remaining_points:
+            distances = [(p, math.dist(current_point, p)) for p in remaining_points]
+            if not distances:
+                break
             
-            # 1. 각 점에서의 접선 벡터 계산
-            tangents = self.get_tangents(points_np)
+            min_distance = min(d for p, d in distances)
             
-            # 2. 각 점 구간마다 베지어 곡선 생성하여 이어붙이기
-            for i in range(len(points_np) - 1):
-                p0 = points_np[i]
-                p1 = points_np[i+1]
-                t0 = tangents[i]
-                t1 = tangents[i+1]
-                segment_points = self.get_bezier_segment(p0, p1, t0, t1, self.bezier_scale_factor)
-                curve_points_to_draw.extend(segment_points)
-        # ---------------------------
+            # [수정] self 변수 대신 params 에서 읽어온 임계값 사용
+            candidates = [p for p, d in distances if d <= min_distance + params['similarity_thresh']]
+            
+            best_next_point = max(candidates, key=lambda p: p[1])
+            
+            sorted_points.append(best_next_point)
+            remaining_points.remove(best_next_point)
+            current_point = best_next_point
 
-        # 시각화
+        return sorted_points
+
+    def _get_line_bbox_intersections(self, line_coords, bbox_coords):
+        lx1, ly1, lx2, ly2 = line_coords
+        xmin, ymin, xmax, ymax = bbox_coords
+        if lx1 == lx2: return [(lx1, ymin), (lx1, ymax)]
+
+        m = (ly2 - ly1) / (lx2 - lx1)
+        c = ly1 - m * lx1
+
+        points = []
+        for y in [ymin, ymax]:
+            if m != 0:
+                x = (y - c) / m
+                if xmin <= x <= xmax: points.append((x, y))
+        for x in [xmin, xmax]:
+            y = m * x + c
+            if ymin <= y <= ymax: points.append((x, y))
+
+        unique_points = sorted(list(set(tuple(map(int, p)) for p in points)))
+        return unique_points if len(unique_points) >= 2 else []
+
+    def fit_adaptive_curve(self, points):
+        if len(points) < 2: return []
+        
+        try:
+            points_np = np.array(points, dtype=np.float32)
+            x_coords = points_np[:, 0]
+            y_coords = points_np[:, 1]
+            
+            num_points = len(points)
+            if num_points >= 3:
+                k = 3 if num_points >= 4 else 2
+                tck, u = splprep([x_coords, y_coords], s=30.0, k=k)
+                eval_points = np.linspace(u.min(), u.max(), 100)
+                x_new, y_new = splev(eval_points, tck)
+                return list(zip(x_new, y_new))
+            elif num_points == 2:
+                return points
+
+        except (ValueError, np.linalg.LinAlgError) as e:
+            self.get_logger().warn(f"Curve fitting failed: {e}")
+        return []
+
+    def visualize_results(self, frame, detections, sorted_points, curve_points, lines_to_draw):
         output_frame = frame.copy()
-        masked_thresh_frame = np.zeros_like(thresh_frame)
-        for det in filtered_detections:
+        for det in detections:
             x1, y1, x2, y2 = map(int, [det.xmin, det.ymin, det.xmax, det.ymax])
-            masked_thresh_frame[y1:y2, x1:x2] = thresh_frame[y1:y2, x1:x2]
-        masked_thresh_frame_bgr = cv2.cvtColor(masked_thresh_frame, cv2.COLOR_GRAY2BGR)
+            cv2.rectangle(output_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
         
-        self.draw_curve(output_frame, curve_points_to_draw)
-        self.draw_curve(masked_thresh_frame_bgr, curve_points_to_draw)
-        self.draw_points(output_frame, all_rep_points)
-        self.draw_points(masked_thresh_frame_bgr, all_rep_points, color=(0, 0, 255))
+        for line in lines_to_draw:
+            pt1 = tuple(map(int, line[0]))
+            pt2 = tuple(map(int, line[1]))
+            cv2.line(output_frame, pt1, pt2, (255, 0, 0), 2)
 
-        for det in filtered_detections:
-            x1, y1, x2, y2 = map(int, [det.xmin, det.ymin, det.xmax, det.ymax])
-            cv2.rectangle(output_frame, (x1, y1), (x2, y2), (0, 255, 0, 50), 1)
-        
-        param_text = f"B:{self.adaptive_block_size}, C:{self.adaptive_c}, Pts:{self.num_points_to_extract}, Spacing:{self.min_point_spacing}, BezierScale:{self.bezier_scale_factor}"
-        cv2.putText(output_frame, param_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 4)
-        cv2.putText(output_frame, param_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
+        for i, point in enumerate(sorted_points):
+            x, y = map(int, point)
+            cv2.circle(output_frame, (x, y), 7, (0, 0, 255), -1)
+            cv2.putText(output_frame, str(i + 1), (x - 10, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2, cv2.LINE_AA)
+
+        if curve_points:
+            curve_pts = np.array(curve_points, dtype=np.int32).reshape((-1, 1, 2))
+            cv2.polylines(output_frame, [curve_pts], isClosed=False, color=(255, 0, 255), thickness=2)
+
         cv2.imshow(self.main_window_name, output_frame)
-        cv2.imshow(self.thresh_window_name, masked_thresh_frame_bgr)
         cv2.waitKey(1)
 
     def destroy_node(self):
