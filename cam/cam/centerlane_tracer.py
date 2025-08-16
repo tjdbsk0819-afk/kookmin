@@ -59,7 +59,7 @@ class CenterlaneTracer(Node):
 
         self._initialize_parameters()
 
-        self.image_subscription = message_filters.Subscriber(self, Image, '/stamped_image_raw') # 이전 백파일 사용할 때는 '/stamped_image_raw'로 변경
+        self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw') # 이전 백파일 사용할 때는 '/stamped_image_raw'로 변경
         self.yolo_subscription = message_filters.Subscriber(self, Detections, '/yolo_detections')
         self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
             [self.image_subscription, self.yolo_subscription],

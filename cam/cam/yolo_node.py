@@ -14,7 +14,7 @@ class Yolo_Node(Node):
         super().__init__('yolo_node')
 
         # --- 토픽 이름 설정 ---
-        self.declare_parameter('image_topic_name', '/stamped_image_raw') # 이전 백파일 불러올 때는 '/stamped_image_raw'로 변경하여 사용
+        self.declare_parameter('image_topic_name', '/image_raw') # 이전 백파일 불러올 때는 '/stamped_image_raw'로 변경하여 사용
         ImageTopicName = self.get_parameter('image_topic_name').get_parameter_value().string_value
         self.get_logger().info(f"Image topic name set to: {ImageTopicName}")
 

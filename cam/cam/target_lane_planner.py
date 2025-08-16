@@ -15,7 +15,7 @@ class TargetLanePlanner(Node):
         self.bridge = CvBridge()
 
         # 원본 이미지와 커브 토픽을 동시에 구독
-        self.image_subscription = message_filters.Subscriber(self, Image, '/stamped_image_raw') # 이전 백파일 사용할 때는 '/stamped_image_raw'로 변경
+        self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw') # 이전 백파일 사용할 때는 '/stamped_image_raw'로 변경
         self.curve_subscription = message_filters.Subscriber(self, Curve, '/center_curve')
         self.yolo_subscription = message_filters.Subscriber(self, Detections, '/yolo_detections')
 
