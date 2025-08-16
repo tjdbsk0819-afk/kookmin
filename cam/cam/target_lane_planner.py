@@ -46,6 +46,10 @@ class TargetLanePlanner(Node):
             # OpenCV를 사용해 받은 점들로 폴리라인 그리기
             cv2.polylines(frame, [curve_pts], isClosed=False, color=(255, 0, 255), thickness=1)
         
+        if curve_msg.state:
+            curve_state = curve_msg.state
+            cv2.putText(frame, curve_state, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2, cv2.LINE_AA)
+        
         # --- YOLO 장애물차량 바운딩 박스 ---
         if yolo_msg.detections:
             detections = [

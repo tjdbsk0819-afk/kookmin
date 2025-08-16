@@ -26,7 +26,7 @@ class CurveSubscriber(Node):
         self.get_logger().info('Curve subscriber node has been started.')
 
     def synchronized_callback(self, image_msg, curve_msg):
-        self.get_logger().info('Received synchronized image and curve')
+        #self.get_logger().info('Received synchronized image and curve')
         try:
             # 이미지를 OpenCV 포맷으로 변환
             frame = self.bridge.imgmsg_to_cv2(image_msg, 'bgr8')
@@ -41,7 +41,8 @@ class CurveSubscriber(Node):
             
             # OpenCV를 사용해 받은 점들로 폴리라인 그리기
             cv2.polylines(frame, [curve_pts], isClosed=False, color=(0, 255, 255), thickness=3)
-
+        self.get_logger().info(curve_msg.state)
+        
         # 결과 이미지 출력
         cv2.imshow("Subscribed Curve", frame)
         cv2.waitKey(1)

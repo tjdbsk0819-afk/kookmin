@@ -58,8 +58,12 @@ class CenterlaneTracer(Node):
         self.current_frame = None
 
         self._initialize_parameters()
+        
+        # 차선 상태 유지를 위한 변수 초기화
+        self.lane_state = "Straight"
+        self.straight_frames_counter = 0
 
-        self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw') # 이전 백파일 사용할 때는 '/stamped_image_raw'로 변경
+        self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw')
         self.yolo_subscription = message_filters.Subscriber(self, Detections, '/yolo_detections')
         self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
             [self.image_subscription, self.yolo_subscription],
@@ -95,6 +99,9 @@ class CenterlaneTracer(Node):
             cv2.createTrackbar('Draw Numbers', self.main_window_name, int(self.params['draw_numbers']), 1, nothing)
             cv2.createTrackbar('Draw Hough', self.main_window_name, int(self.params['draw_hough']), 1, nothing)
             cv2.createTrackbar('Draw Curve', self.main_window_name, int(self.params['draw_curve']), 1, nothing)
+            
+            cv2.createTrackbar('Curve Thresh', self.main_window_name, self.params['curve_thresh'], 100, nothing)
+            cv2.createTrackbar('Straight Frame Thresh', self.main_window_name, self.params['straight_thresh_frame'], 20, nothing)
 
             self.get_logger().info("Debug mode ON. Trackbars are enabled.")
         else:
@@ -109,27 +116,29 @@ class CenterlaneTracer(Node):
         """
         self.params = {
             # --- 이미지 처리 파라미터 ---
-            'adapt_method_val': 1,      # [Adaptive Threshold] 0: Mean, 1: Gaussian. 가우시안 방식이 조명이 불균일할 때 좀 더 강건함.
-            'block_size_val': 5,        # [Adaptive Threshold] 임계값을 계산할 주변 픽셀 영역 크기. (실제 크기: val * 2 + 3). 값이 클수록 큰 특징을 보고, 작을수록 세밀한 특징을 봄.
-            'c_constant_val': 5,        # [Adaptive Threshold] 계산된 평균/가중평균에서 뺄 상수. (실제 값: val - 25). 양수면 어두워지고 음수면 밝아짐. 이미지 전반의 밝기 조절.
-            
-            'canny_thresh1': 50,        # [Canny Edge] 약한 엣지로 판단할 하위 임계값.
-            'canny_thresh2': 150,       # [Canny Edge] 강한 엣지로 판단할 상위 임계값. (thresh1:thresh2 비율은 1:2 ~ 1:3 권장)
-            
-            'hough_threshold': 20,      # [Hough Transform] 직선으로 판단하기 위해 필요한 최소한의 점 개수(투표 수). 값이 높을수록 길고 확실한 직선만 검출.
-            'hough_min_len': 20,        # [Hough Transform] 직선으로 인정할 최소 길이 (픽셀). 짧은 노이즈성 선분 제거에 유용.
-            'hough_max_gap': 5,         # [Hough Transform] 직선 위의 점들 사이에서 허용할 최대 간격. 점선 형태의 차선 검출에 유용.
+            'adapt_method_val': 1,
+            'block_size_val': 5,
+            'c_constant_val': 5,
+            'canny_thresh1': 50,
+            'canny_thresh2': 150,
+            'hough_threshold': 20,
+            'hough_min_len': 20,
+            'hough_max_gap': 5,
 
             # --- 대표점 정렬 및 커브 피팅 파라미터 ---
-            'similarity_thresh': 25,    # [Point Sorting] 다음 점을 찾을 때, 가장 가까운 점과 이 값(px) 이내의 거리 차이를 갖는 모든 점을 후보로 간주. 알고리즘이 엉뚱한 점으로 튀는 것을 방지.
-            'fit_mode_val': 1,          # [Curve Fitting] 0: Spline (부드러운 곡선), 1: Linear (직선).
+            'similarity_thresh': 25,
+            'fit_mode_val': 1,
 
             # --- 시각화 옵션 ---
-            'draw_bbox': True,          # YOLO 바운딩 박스 표시 여부
-            'draw_points': True,        # 대표점(원) 표시 여부
-            'draw_numbers': True,       # 대표점 순서(숫자) 표시 여부
-            'draw_hough': True,         # 허프 변환 선분 표시 여부
-            'draw_curve': True,         # 최종 피팅 곡선 표시 여부
+            'draw_bbox': True,
+            'draw_points': True,
+            'draw_numbers': True,
+            'draw_hough': True,
+            'draw_curve': True,
+
+            # --- 커브/직선 판단 파라미터 ---
+            'curve_thresh': 98,
+            'straight_thresh_frame': 5,
         }
     
     def _update_params_from_trackbars(self):
@@ -149,6 +158,9 @@ class CenterlaneTracer(Node):
         self.params['draw_numbers'] = cv2.getTrackbarPos('Draw Numbers', self.main_window_name) == 1
         self.params['draw_hough'] = cv2.getTrackbarPos('Draw Hough', self.main_window_name) == 1
         self.params['draw_curve'] = cv2.getTrackbarPos('Draw Curve', self.main_window_name) == 1
+        self.params['curve_thresh'] = cv2.getTrackbarPos('Curve Thresh', self.main_window_name)
+        self.params['straight_thresh_frame'] = cv2.getTrackbarPos('Straight Frame Thresh', self.main_window_name)
+
 
     def mouse_event_callback(self, event, x, y, flags, param):
         if event == cv2.EVENT_LBUTTONDOWN and self.current_frame is not None:
@@ -196,18 +208,76 @@ class CenterlaneTracer(Node):
             frame_height=h,
             frame_width=w
         )
+
+        ratio = 1.0 # ratio 변수 초기화
         if curve_points_to_draw:
+            current_threshold = self.params['curve_thresh'] / 100.0
+            current_frame_decision, ratio = self._get_current_frame_decision(curve_points_to_draw, current_threshold)
+            self._update_lane_state(current_frame_decision)
+            
             curve_msg = Curve()
             curve_msg.header = image_msg.header
             curve_msg.points = [Point2D(x=float(p[0]), y=float(p[1])) for p in curve_points_to_draw]
+            curve_msg.state = self.lane_state 
             self.curve_publisher.publish(curve_msg)
         
         # --- 시각화 로직 (Debug 모드일 때만 실행) ---
         if self.debug:
-            self.visualize_results(frame, filtered_detections, sorted_rep_points, curve_points_to_draw, lines_to_draw, self.params)
+            final_decision_text = f"State: {self.lane_state}"
+            if curve_points_to_draw:
+                current_threshold = self.params['curve_thresh'] / 100.0
+                final_decision_text = f"State: {self.lane_state} (Ratio: {ratio:.2f} / Thresh: {current_threshold:.2f})"
+            
+            self.visualize_results(
+                frame, 
+                filtered_detections, 
+                sorted_rep_points, 
+                curve_points_to_draw, 
+                lines_to_draw, 
+                self.params,
+                final_decision_text
+            )
             for name, img in zip(self.debug_window_names, debug_images):
                 if img is not None:
                     cv2.imshow(name, img)
+    
+    def _get_current_frame_decision(self, curve_pts, threshold):
+        """
+        '현재 프레임'의 점들만을 기반으로 직선인지 커브인지 판단합니다. (영문 반환)
+        """
+        if len(curve_pts) < 2:
+            return "Straight", 1.0
+
+        start_point = curve_pts[0]
+        end_point = curve_pts[-1]
+        end_to_end_distance = math.dist(start_point, end_point)
+        path_length = sum(math.dist(curve_pts[i], curve_pts[i-1]) for i in range(1, len(curve_pts)))
+
+        if path_length == 0:
+            return "Straight", 1.0
+
+        curvature_ratio = end_to_end_distance / path_length
+
+        decision = "Curve" if curvature_ratio < threshold else "Straight"
+        return decision, curvature_ratio
+
+    def _update_lane_state(self, current_frame_decision):
+        """
+        Hysteresis 로직을 적용하여 최종 차선 상태를 업데이트합니다.
+        """
+        if self.lane_state == "Straight":
+            if current_frame_decision == "Curve":
+                self.lane_state = "Curve"
+                self.straight_frames_counter = 0
+        
+        elif self.lane_state == "Curve":
+            if current_frame_decision == "Straight":
+                self.straight_frames_counter += 1
+                if self.straight_frames_counter >= self.params['straight_thresh_frame']:
+                    self.lane_state = "Straight"
+            else: 
+                self.straight_frames_counter = 0
+
 
     def _extract_representative_points(self, frame, detections, params):
         all_rep_points = []
@@ -359,8 +429,12 @@ class CenterlaneTracer(Node):
             return self._extend_path_to_boundaries(base_path, frame_height, frame_width)
         else: return base_path
 
-    def visualize_results(self, frame, detections, sorted_points, curve_points, lines_to_draw, params):
+    def visualize_results(self, frame, detections, sorted_points, curve_points, lines_to_draw, params, final_decision_text):
         output_frame = frame.copy()
+        
+        if final_decision_text:
+            cv2.putText(output_frame, final_decision_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2, cv2.LINE_AA)
+            
         if params['draw_bbox']:
             for det in detections:
                 x1, y1, x2, y2 = map(int, [det.xmin, det.ymin, det.xmax, det.ymax])
