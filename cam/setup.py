@@ -31,6 +31,8 @@ setup(
             'yolo_node = cam.yolo_node:main',
             'centerlane_tracer = cam.centerlane_tracer:main',
             'curve_subscriber = cam.curve_subscriber:main',
+            'topic_stamper = cam.topic_stamper:main',
+            'target_lane_planner = cam.target_lane_planner:main',
         ],
     },
 )

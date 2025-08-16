@@ -13,7 +13,7 @@ class CurveSubscriber(Node):
         self.bridge = CvBridge()
 
         # 원본 이미지와 커브 토픽을 동시에 구독
-        self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw')
+        self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw') # 이전 백파일 사용할 때는 /stamped_image_raw'로 변경
         self.curve_subscription = message_filters.Subscriber(self, Curve, '/center_curve')
 
         # 두 토픽의 타임스탬프를 기준으로 메시지를 동기화
