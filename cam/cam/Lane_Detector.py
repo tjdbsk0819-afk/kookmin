@@ -9,6 +9,7 @@ from std_msgs.msg import String
 import cv2
 import numpy as np
 from collections import deque
+from custom_interfaces.msg import XycarState
 
 # ===============================
 # 13pixels = 2.5cm (차선 폭)
@@ -53,11 +54,8 @@ class Lane_Detector(Node):
 
         self.img_sub = self.create_subscription(Image, '/image_raw', self.image_callback, 10)
         self.trigger_sub = self.create_subscription(String,'/lane_override_cmd', self.trigger_callback, 10)
-        self.lane_point_pub = self.create_publisher(Point, '/lane_point', 10)
 
-        # 🔧 추가: 상태/이벤트 퍼블리셔
-        self.mode_pub  = self.create_publisher(String, '/lane_mode', 10)
-        self.current_mode = 'center'   # 'center' | 'left' | 'right'
+        self.xycar_state_pub = self.create_publisher(XycarState, '/xycar_state', 10)
 
         self.bridge = CvBridge()
         self.get_logger().info('🛣️  Lane_Detector Node Started Successfully❗')
@@ -320,7 +318,7 @@ class Lane_Detector(Node):
         frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
         canny = self.apply_canny(frame, show=False)
         bev, src = self.get_birds_eye_view(canny)
-        self.show_roi_region(frame, src, show=True)
+        self.show_roi_region(frame, src, show=False)
         lines = self.detect_lines_hough(bev, show=False)
         positions = self.filter_lines_by_angle(lines, show=False)
         lane_candidates = self.extract_lane_candidates_from_clusters(positions,show=False,base_img=bev)
@@ -329,28 +327,23 @@ class Lane_Detector(Node):
         self.refine_lane_with_candidates_and_prediction(lane_candidates, predicted_lane)
         self.mark_lane(bev, show=True)
 
-        lane_msg = Point()
+        state_msg = XycarState()
 
         if self.override_target_lane == 'go_right':
-            mode_str = 'right'
-            lane_msg.x = (self.lane[1] + self.lane[2]) / 2
+            state_msg.drive_mode = 'right'
+            target_x = (self.lane[1] + self.lane[2]) / 2
         elif self.override_target_lane == 'go_left':
-            mode_str = 'left'
-            lane_msg.x = (self.lane[0] + self.lane[1]) / 2
+            state_msg.drive_mode = 'left'
+            target_x = (self.lane[0] + self.lane[1]) / 2
         else:
-            mode_str = 'center'
-            lane_msg.x = self.lane[1]
+            state_msg.drive_mode = 'center'
+            target_x = self.lane[1]
 
-        lane_msg.y = float(self.bev_img_mid)
-        lane_msg.z = self.angle
+        state_msg.target_point.x = float(target_x)
+        state_msg.target_point.y = float(self.bev_img_mid)
+        state_msg.target_point.z = self.angle
 
-        self.lane_point_pub.publish(lane_msg)
-        self.mode_pub.publish(String(data=mode_str))
-
-        # 현재 모드가 override 명령과 다를 경우에만 발행하여 불필요한 메시지 줄임
-        if mode_str != self.current_mode:
-            self.current_mode = mode_str
-            self.mode_pub.publish(String(data=self.current_mode))
+        self.xycar_state_pub.publish(state_msg)
 
         cv2.waitKey(1)
         
@@ -369,19 +362,6 @@ class Lane_Detector(Node):
         else:
             self.get_logger().warn(f'⚠️ [Command Received] unknown: {command}')
             return
-
-        # if self.override_target_lane == 'go_right':
-        #     new_mode = 'right'
-        # elif self.override_target_lane == 'go_left':
-        #     new_mode = 'left'
-        # else:
-        #     new_mode = 'center'
-
-        # if new_mode != self.current_mode:
-        #     self.current_mode = new_mode
-
-
-        
     
 def main(args=None):
     rclpy.init(args=args)

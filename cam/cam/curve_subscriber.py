@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
-from cam_interfaces.msg import Curve # 생성한 메시지 import
+from custom_interfaces.msg import Curve # 생성한 메시지 import
 import message_filters # 시간 동기화를 위해 import
 
 class CurveSubscriber(Node):

@@ -7,7 +7,7 @@ import os
 from ultralytics import YOLO
 
 # 1. 생성한 커스텀 메시지 임포트
-from cam_interfaces.msg import Detection, Detections
+from custom_interfaces.msg import Detection, Detections
 
 class Yolo_Node(Node):
     def __init__(self):

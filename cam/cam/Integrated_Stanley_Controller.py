@@ -2,10 +2,10 @@
 # -*- coding:utf-8 -*-
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Point
 import numpy as np
-from std_msgs.msg import Float32MultiArray, String, Float32
+from std_msgs.msg import Float32MultiArray, String
 from collections import deque
+from custom_interfaces.msg import ObstacleState, XycarState
 
 class IntegratedStanleyController(Node):
     def __init__(self):
@@ -15,10 +15,8 @@ class IntegratedStanleyController(Node):
         #                       ROS2 인터페이스
         # ==============================================================
         # 구독자들
-        self.lane_sub = self.create_subscription(Point, '/lane_point', self.lane_callback, 10)
-        self.distance_sub = self.create_subscription(Float32, '/obstacle_distance', self.distance_callback, 10)
-        self.mode_sub = self.create_subscription(String, '/lane_mode', self.mode_callback, 10)
-        self.position_sub = self.create_subscription(String, '/obstacle_position', self.position_callback, 10)
+        self.xycar_state_sub = self.create_subscription(XycarState,'/xycar_state',self.xycar_state_callback,10)
+        self.obstacle_state_sub = self.create_subscription(ObstacleState,'/obstacle_state',self.obstacle_state_callback,10)
         # 퍼블리셔
         self.motor_pub = self.create_publisher(Float32MultiArray, '/xycar_motor', 10)
         self.override_pub = self.create_publisher(String, '/lane_override_cmd', 10)
@@ -74,6 +72,8 @@ class IntegratedStanleyController(Node):
         self.is_obstacle_detected = False
         self.current_speed = self.MIN_SPEED        # 현재 실제 속도
         self.obstacle_position = 'none'
+        self.detected_vehicle_count = 0
+        
         # 기타
         self.min_allowed_speed = min(self.speed_curve, self.speed_straight)
         self.max_allowed_speed = max(self.speed_curve, self.speed_straight)
@@ -130,67 +130,70 @@ class IntegratedStanleyController(Node):
     #                   Obstacle Follower 메서드들
     # ==============================================================
     def calculate_final_speed(self, target_speed):
-        if self.is_obstacle_detected and self.current_mode == self.obstacle_position:
-            current_speed_mps = self.current_speed / 20.0 
-            safe_speed_mps = max(current_speed_mps, 0.1)
+            # --- [수정] 장애물 차량이 2대 이상일 때만 Follow 로직 실행 ---
+            condition_to_follow = (
+                self.is_obstacle_detected and
+                self.current_mode == self.obstacle_position and
+                self.detected_vehicle_count >= 2
+            )
+
+            if condition_to_follow:
+                current_speed_mps = self.current_speed / 20.0 
+                safe_speed_mps = max(current_speed_mps, 0.1)
+                time_gap = self.relative_distance / safe_speed_mps
+                error = time_gap - self.TARGET_TIME_GAP
+                speed_adjustment = self.KP_SPEED_CONTROL * error
+                adjusted_speed = self.current_speed + speed_adjustment
+                final_speed = np.clip(adjusted_speed, self.MIN_SPEED, target_speed)
+                
+                # 로그에 차량 개수도 표시
+                return final_speed, f"🚧 FOLLOWING (V:{self.detected_vehicle_count})"
             
-            time_gap = self.relative_distance / safe_speed_mps
-            error = time_gap - self.TARGET_TIME_GAP
-            speed_adjustment = self.KP_SPEED_CONTROL * error
-            
-            adjusted_speed = self.current_speed + speed_adjustment
-            final_speed = np.clip(adjusted_speed, self.MIN_SPEED, target_speed)
-            
-            return final_speed, f"🚧 FOLLOWING [{self.obstacle_position.upper()}]"
-        
-        else: # 장애물이 없거나 다른 차선에 있는 경우
-            speed_diff = target_speed - self.current_speed
-            if speed_diff > 0:
-                final_speed = self.current_speed + self.ACCEL_STEP
-                return min(final_speed, target_speed), "🔼 ACCELERATING"
-            elif speed_diff < 0:
-                final_speed = self.current_speed - self.DECEL_STEP
-                return max(final_speed, target_speed), "🔽 DECELERATING"
-            else:
-                return self.current_speed, "➡️ MAINTAINING"
+            else: # 장애물이 없거나, 다른 차선에 있거나, 1대일 경우
+                speed_diff = target_speed - self.current_speed
+                if speed_diff > 0:
+                    return self.current_speed + self.ACCEL_STEP, "🔼 ACCELERATING"
+                elif speed_diff < 0:
+                    return self.current_speed - self.DECEL_STEP, "🔽 DECELERATING"
+                else:
+                    return self.current_speed, "➡️ MAINTAINING"
 
     # ==============================================================
     #                           콜백 함수들
     # ==============================================================
-    def position_callback(self, msg: String):
-        """장애물 위치 정보 콜백"""
-        self.obstacle_position = msg.data.strip().lower()
 
-    def mode_callback(self, msg: String):
-        """차선 모드 변경 콜백"""
-        mode = msg.data.strip().lower()
-        if mode in ('center', 'left', 'right'):
-            self.current_mode = mode
-
-    def distance_callback(self, msg: Float32):
-        """장애물 거리 정보 콜백"""
-        self.relative_distance = msg.data
-        self.is_obstacle_detected = self.relative_distance < self.OBSTACLE_DETECTION_THRESHOLD
-        # [수정] 거리 정보를 받을 때마다 회피 명령을 보낼지 체크
-        if self.is_obstacle_detected and self.obstacle_position == 'right' and self.current_mode != 'left':
-            self.get_logger().warn("🚨 Condition met! Sending 'go_left' command to Lane Detector.")
-            cmd_msg = String()
-            cmd_msg.data = 'go_left'
-            self.override_pub.publish(cmd_msg)
-
-        if self.is_obstacle_detected and self.obstacle_position == 'left' and self.current_mode != 'right':
-            self.get_logger().warn("🚨 Condition met! Sending 'go_right' command to Lane Detector.")
-            cmd_msg = String()
-            cmd_msg.data = 'go_right'
-            self.override_pub.publish(cmd_msg)
+    def obstacle_state_callback(self, msg: ObstacleState):
+        """장애물 상태(거리 및 위치) 정보 콜백"""
+        # 메시지에서 거리와 위치 정보를 한 번에 업데이트
+        self.relative_distance = msg.distance_m
+        self.obstacle_position = msg.position.strip().lower()
         
-    def lane_callback(self, msg: Point):
-        """차선 정보 콜백 - 메인 제어 로직"""
-        lane_center_x = msg.x
-        lane_center_y = msg.y
-        lane_angle_rad = msg.z
+        # 장애물 감지 여부 판단
+        self.is_obstacle_detected = self.relative_distance < self.OBSTACLE_DETECTION_THRESHOLD
+        
+        # 회피 명령 로직 (기존 distance_callback의 로직과 동일)
+        if self.is_obstacle_detected:
+            if self.obstacle_position == 'right':
+                self.get_logger().warn("🚨 Condition met! Sending 'go_left' command to Lane Detector.")
+                cmd_msg = String()
+                cmd_msg.data = 'go_left'
+                self.override_pub.publish(cmd_msg)
+            elif self.obstacle_position == 'left':
+                self.get_logger().warn("🚨 Condition met! Sending 'go_right' command to Lane Detector.")
+                cmd_msg = String()
+                cmd_msg.data = 'go_right'
+                self.override_pub.publish(cmd_msg)
 
-        # 1. Stanley Controller로 조향각 계산
+    def xycar_state_callback(self, msg: XycarState):
+        """차선/주행모드 정보 콜백 - 메인 제어 로직"""
+        # 1. 메시지로부터 차선 정보와 주행 모드를 한 번에 업데이트
+        self.current_mode = msg.drive_mode.strip().lower()
+        
+        lane_center_x = msg.target_point.x
+        lane_center_y = msg.target_point.y
+        lane_angle_rad = msg.target_point.z
+
+        # 2. Stanley Controller로 조향각 계산 (기존 lane_callback 로직과 동일)
         servo_angle, heading_error_rad, cte_term = self.compute_steering_angle_stanley(
             lane_center_x=lane_center_x,
             lane_center_y=lane_center_y,
@@ -203,31 +206,30 @@ class IntegratedStanleyController(Node):
             k=self.current_k
         )
 
-        # 2. 조향각 후처리 (rate limiting, smoothing, clamping)
+        # 3. 조향각 후처리 (기존과 동일)
         raw_delta = servo_angle - self.last_steering_deg
         rate_limited = abs(raw_delta) > self.max_delta_angle
-
         limited_angle = self.limit_angle_change(servo_angle, self.last_steering_deg, self.max_delta_angle)
         smoothed_angle = self.smooth_angle(limited_angle)
         final_angle = self.clamp_angle(smoothed_angle)
         self.last_steering_deg = final_angle
 
-        # 3. Stanley Controller의 목표 속도 계산
+        # 4. 목표 속도 계산 (기존과 동일)
         target_speed, current_k = self.get_target_speed_and_k(smoothed_angle)
 
-        # 4. Obstacle Follower로 최종 속도 결정
+        # 5. 최종 속도 결정 (기존과 동일)
         final_speed, speed_status = self.calculate_final_speed(target_speed)
-        self.current_speed = final_speed  # 현재 속도 업데이트
+        self.current_speed = final_speed
 
-        # 5. 모터 명령 발행
+        # 6. 모터 명령 발행 (기존과 동일)
         motor_msg = Float32MultiArray()
         motor_msg.data = [final_angle, float(self.current_speed)]
         self.motor_pub.publish(motor_msg)
 
-        # 6. 로깅
+        # 7. 로깅 (기존과 동일)
         self.log_status(heading_error_rad, cte_term, current_k, final_angle, 
                        target_speed, final_speed, speed_status, rate_limited)
-
+        
     def log_status(self, heading_error_rad, cte_term, current_k, final_angle, 
                    target_speed, final_speed, speed_status, rate_limited):
         """상태 로깅"""

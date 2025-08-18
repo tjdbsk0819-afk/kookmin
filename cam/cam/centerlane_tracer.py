@@ -33,7 +33,7 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
-from cam_interfaces.msg import Detections, Curve, Point2D
+from custom_interfaces.msg import Detections, Curve, Point2D
 import message_filters
 import math
 

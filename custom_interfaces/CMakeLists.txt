@@ -10,6 +10,7 @@ find_package(ament_cmake REQUIRED)
 # 메시지 생성에 필요한 명령어를 포함한 패키지를 찾습니다.
 find_package(rosidl_default_generators REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 # uncomment the following section in order to fill in
 # further dependencies manually.
@@ -32,7 +33,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Curve.msg"
   "msg/Detection.msg"
   "msg/Detections.msg"
-  DEPENDENCIES std_msgs
+  "msg/ClusterData.msg"
+  "msg/ConeData.msg"
+  DEPENDENCIES std_msgs geometry_msgs
 )
 
 ament_package()

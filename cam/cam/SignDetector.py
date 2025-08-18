@@ -8,7 +8,7 @@ from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
-from cam_interfaces.msg import Detections
+from custom_interfaces.msg import Detections
 import message_filters
 
 class SignDetector(Node):

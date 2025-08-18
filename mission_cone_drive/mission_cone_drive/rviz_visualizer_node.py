@@ -1,7 +1,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
-from mission_cone_interfaces.msg import ClusterData, ConeData
+from custom_interfaces.msg import ClusterData, ConeData
 from nav_msgs.msg import Path
 from geometry_msgs.msg import Point, PointStamped
 from std_msgs.msg import Float32MultiArray
