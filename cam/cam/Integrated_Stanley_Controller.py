@@ -163,7 +163,6 @@ class IntegratedStanleyController(Node):
         # 장애물 차량이 2대 이상일 때만 Follow 로직 실행
         condition_to_follow = (
             self.is_obstacle_detected and
-            self.current_mode == self.obstacle_position and
             self.detected_vehicle_count >= 2
         )
 
@@ -209,7 +208,7 @@ class IntegratedStanleyController(Node):
         self.is_obstacle_detected = self.relative_distance < self.OBSTACLE_DETECTION_THRESHOLD
 
         # 회피 명령(차선 override) 발행
-        if self.is_obstacle_detected:
+        if self.is_obstacle_detected and self.detected_vehicle_count == 1:
             if self.obstacle_position == 'right':
                 self.get_logger().warn("🚨 Condition met! Sending 'go_left' command to Lane Detector.")
                 cmd_msg = String()

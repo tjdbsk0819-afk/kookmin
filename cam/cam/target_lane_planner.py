@@ -13,6 +13,7 @@ from ament_index_python.packages import get_package_share_directory
 from rclpy.qos import qos_profile_sensor_data
 import yaml
 import os
+from sklearn.cluster import DBSCAN
 
 class TargetLanePlanner(Node):
     def __init__(self):
@@ -76,54 +77,82 @@ class TargetLanePlanner(Node):
             avg_distance = -1.0
             if img_pts.shape[0] > 0:
                 indices = np.where((img_pts[:, 0] >= xmin) & (img_pts[:, 0] < xmax) & (img_pts[:, 1] >= ymin) & (img_pts[:, 1] < ymax))[0]
-                if len(indices) > 0:
-                    ranges_in_bbox = np.sqrt(points_3d[indices, 0]**2 + points_3d[indices, 1]**2)
-                    avg_distance = np.mean(ranges_in_bbox)
+                if len(indices) > 5: # 최소 5개 이상의 포인트가 있을 때만 클러스터링 수행
+                    points_in_bbox = points_3d[indices]
+
+                    dbscan = DBSCAN(eps=0.3, min_samples=3)
+                    clusters = dbscan.fit_predict(points_in_bbox)
+                    
+                    # 노이즈(-1)를 제외하고 가장 큰 클러스터 찾기
+                    unique_labels, counts = np.unique(clusters[clusters != -1], return_counts=True)
+                    if len(counts) > 0:
+                        largest_cluster_label = unique_labels[np.argmax(counts)]
+                        
+                        # 가장 큰 클러스터에 속하는 포인트들만 선택
+                        main_cluster_points = points_in_bbox[clusters == largest_cluster_label]
+                        
+                        # 해당 클러스터의 평균 거리 계산
+                        ranges_in_cluster = np.sqrt(main_cluster_points[:, 0]**2 + main_cluster_points[:, 1]**2)
+                        avg_distance = np.mean(ranges_in_cluster)
             if avg_distance > 0 and position_str != "unknown":
                 processed_obstacles.append({'distance': avg_distance, 'position': position_str, 'xmin': xmin, 'ymin': ymin})
                 cv2.putText(image, f"{avg_distance:.1f}m", (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 cv2.putText(image, position_str, (xmin, ymin - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
         
-        # 2. 상태 머신 기반 의사결정 로직
         obstacle_msg = ObstacleState()
         target_obstacle = None
-        current_override_cmd = self.last_override_cmd # 기본적으로 이전 명령 유지
+        current_override_cmd = self.last_override_cmd
+        num_detected_vehicles = len(detections) # YOLO가 탐지한 차량 총 수
 
-        # [상태 1] 중앙 주행 중일 때의 판단
+        # [상태 1] 중앙 주행 중 (CENTER_DRIVING)
         if self.driving_state == "CENTER_DRIVING":
-            if len(processed_obstacles) >= 2:
-                # 2대 이상: 가장 먼 차 추종 (차선 변경 시작 안함, 컨트롤러가 따라가기만 함)
-                target_obstacle = max(processed_obstacles, key=lambda obs: obs['distance'])
-                current_override_cmd = 'reset' # 중앙 차선에서 따라감
-            elif len(processed_obstacles) == 1:
-                target_obstacle = processed_obstacles[0]
-                # 1대: 거리가 가까우면 "추월 상태"로 전환
-                if target_obstacle['distance'] < self.OVERTAKE_THRESHOLD_M:
+            if num_detected_vehicles >= 2:
+                # 2대 이상 감지되면 무조건 Time_Gap 모드로 전환
+                self.driving_state = "Time_Gap"
+                self.get_logger().warn("STATE CHANGE: CENTER_DRIVING -> Time_Gap (2+ vehicles detected).")
+                if processed_obstacles: # 거리 측정된 차가 있으면 가장 먼 차 추종
+                    target_obstacle = max(processed_obstacles, key=lambda obs: obs['distance'])
+                    current_override_cmd = 'go_left' if target_obstacle['position'] == 'left' else 'go_right'
+            elif num_detected_vehicles == 1 and processed_obstacles:
+                # 1대 감지되고 거리 측정도 성공했다면, 추월 여부 판단
+                obstacle = processed_obstacles[0]
+                if obstacle['distance'] < self.OVERTAKE_THRESHOLD_M:
                     self.driving_state = "OVERTAKING"
                     self.overtake_timer = self.get_clock().now()
-                    target_position = target_obstacle['position']
-                    current_override_cmd = 'go_left' if target_position == 'right' else 'go_right'
-                    self.get_logger().warn(f"STATE CHANGE: CENTER_DRIVING -> OVERTAKING ({current_override_cmd}). Timer started.")
-                else:
+                    target_obstacle = obstacle
+                    current_override_cmd = 'go_left' if target_obstacle['position'] == 'right' else 'go_right'
+                    self.get_logger().warn(f"STATE CHANGE: CENTER_DRIVING -> OVERTAKING ({current_override_cmd}).")
+                else: # 1대 있지만 멀리 있으면 중앙 주행 유지
                     current_override_cmd = 'reset'
-            else: # 장애물 없음
+            else: # 감지된 차량이 없거나, 있어도 거리 측정을 못하면 중앙 주행 유지
                 current_override_cmd = 'reset'
 
-        # [상태 2] 추월 중일 때의 판단
+        # [상태 2] 추월 중 (OVERTAKING)
         elif self.driving_state == "OVERTAKING":
             duration = self.get_clock().now() - self.overtake_timer
-            # 타이머가 만료되면 "중앙 주행 상태"로 복귀
             if duration.nanoseconds / 1e9 > self.OVERTAKE_DURATION_S:
                 self.driving_state = "CENTER_DRIVING"
                 self.overtake_timer = None
                 current_override_cmd = 'reset'
-                self.get_logger().info("STATE CHANGE: OVERTAKING -> CENTER_DRIVING. Overtake complete.")
+                self.get_logger().info("STATE CHANGE: OVERTAKING -> CENTER_DRIVING.")
             else:
-                # 타이머가 끝나기 전까지는 기존 차선 변경 명령을 유지 (YOLO 결과 무시)
-                current_override_cmd = self.last_override_cmd 
-                self.get_logger().info(f"Overtaking in progress... ({duration.nanoseconds / 1e9:.1f}s / {self.OVERTAKE_DURATION_S}s)")
+                current_override_cmd = self.last_override_cmd
+                self.get_logger().info(f"Overtaking... ({duration.nanoseconds / 1e9:.1f}s)")
+        
+        # [상태 3] 다중 차량 추종 (Time_Gap)
+        elif self.driving_state == "Time_Gap":
+            if num_detected_vehicles < 2:
+                # 차량이 2대 미만으로 줄면 중앙 주행으로 복귀
+                self.driving_state = "CENTER_DRIVING"
+                current_override_cmd = 'reset'
+                self.get_logger().warn("STATE CHANGE: Time_Gap -> CENTER_DRIVING (Vehicles < 2).")
+            else: # 2대 이상이면 계속 가장 먼 차 추종
+                if processed_obstacles:
+                    target_obstacle = max(processed_obstacles, key=lambda obs: obs['distance'])
+                    current_override_cmd = 'go_left' if target_obstacle['position'] == 'left' else 'go_right'
+                else: # 탐지는 됐지만 거리 정보가 없으면 일단 직진
+                    current_override_cmd = 'reset'
 
-        # ... (이하 명령 및 상태 발행 로직은 이전과 동일) ...
         if current_override_cmd != self.last_override_cmd:
             cmd_msg = String(data=current_override_cmd)
             self.override_pub.publish(cmd_msg)
