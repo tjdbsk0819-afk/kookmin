@@ -223,57 +223,101 @@ class Lane_Detector(Node):
         if not lane_candidates:
             self.lane = predicted_lane
             return
+
+        mode = self.override_target_lane  # None, 'go_left', 'go_right'
         possibles = []
         cos_angle = max(np.cos(self.angle), self.min_cos_angle)
-        for lc in lane_candidates:
-            idx = np.argmin(abs(self.lane - lc))
-            if idx == 0:
-                estimated_lane = [
-                    lc,
-                    lc + self.left_to_center_dist / cos_angle,
-                    lc + self.outer_lane_dist / cos_angle
-                ]
-                lc2_candidate = [c for c in lane_candidates if abs(c - estimated_lane[1]) < self.cluster_match_threshold]
-                lc3_candidate = [c for c in lane_candidates if abs(c - estimated_lane[2]) < self.cluster_match_threshold]
-                if not lc2_candidate:
-                    lc2_candidate.append(estimated_lane[1])
-                if not lc3_candidate:
-                    lc3_candidate.append(estimated_lane[2])
-                for lc2 in lc2_candidate:
-                    for lc3 in lc3_candidate:
-                        possibles.append([lc, lc2, lc3])
-            elif idx == 1:
-                estimated_lane = [
-                    lc - self.left_to_center_dist / cos_angle,
-                    lc,
-                    lc + self.right_to_center_dist / cos_angle
-                ]
-                lc1_candidate = [c for c in lane_candidates if abs(c - estimated_lane[0]) < self.cluster_match_threshold]
-                lc3_candidate = [c for c in lane_candidates if abs(c - estimated_lane[2]) < self.cluster_match_threshold]
-                if not lc1_candidate:
-                    lc1_candidate.append(estimated_lane[0])
-                if not lc3_candidate:
-                    lc3_candidate.append(estimated_lane[2])
-                for lc1 in lc1_candidate:
-                    for lc3 in lc3_candidate:
-                        possibles.append([lc1, lc, lc3])
-            else:
-                estimated_lane = [
-                    lc - self.outer_lane_dist / cos_angle,
-                    lc - self.right_to_center_dist / cos_angle,
-                    lc
-                ]
-                lc1_candidate = [c for c in lane_candidates if abs(c - estimated_lane[0]) < self.cluster_match_threshold]
-                lc2_candidate = [c for c in lane_candidates if abs(c - estimated_lane[1]) < self.cluster_match_threshold]
-                if not lc1_candidate:
-                    lc1_candidate.append(estimated_lane[0])
-                if not lc2_candidate:
-                    lc2_candidate.append(estimated_lane[1])
-                for lc1 in lc1_candidate:
+
+        # === 1) override 분기: go_left / go_right 일 때 기준차선 강제 ===
+        if mode in ('go_left', 'go_right'):
+            for lc in lane_candidates:
+                if not (0 <= lc < self.bev_img_w):
+                    continue
+
+                if mode == 'go_left':
+                    # lc를 '왼쪽차선'으로 고정(앵커)
+                    estimated_lane = [
+                        lc,
+                        lc + self.left_to_center_dist / cos_angle,
+                        lc + self.outer_lane_dist / cos_angle
+                    ]
+                    lc2_candidate = [c for c in lane_candidates if abs(c - estimated_lane[1]) < self.cluster_match_threshold] or [estimated_lane[1]]
+                    lc3_candidate = [c for c in lane_candidates if abs(c - estimated_lane[2]) < self.cluster_match_threshold] or [estimated_lane[2]]
                     for lc2 in lc2_candidate:
-                        possibles.append([lc1, lc2, lc])
-        
-        possibles = np.array(possibles)
+                        for lc3 in lc3_candidate:
+                            possibles.append([lc, lc2, lc3])
+
+                else:  # mode == 'go_right'
+                    # lc를 '오른쪽차선'으로 고정(앵커)
+                    estimated_lane = [
+                        lc - self.outer_lane_dist / cos_angle,
+                        lc - self.right_to_center_dist / cos_angle,
+                        lc
+                    ]
+                    lc1_candidate = [c for c in lane_candidates if abs(c - estimated_lane[0]) < self.cluster_match_threshold] or [estimated_lane[0]]
+                    lc2_candidate = [c for c in lane_candidates if abs(c - estimated_lane[1]) < self.cluster_match_threshold] or [estimated_lane[1]]
+                    for lc1 in lc1_candidate:
+                        for lc2 in lc2_candidate:
+                            possibles.append([lc1, lc2, lc])
+
+        # === 2) 기본 모드: 기존 로직 그대로 유지 ===
+        else:
+            for lc in lane_candidates:
+                idx = np.argmin(abs(self.lane - lc))
+                if idx == 0:
+                    estimated_lane = [
+                        lc,
+                        lc + self.left_to_center_dist / cos_angle,
+                        lc + self.outer_lane_dist / cos_angle
+                    ]
+                    lc2_candidate = [c for c in lane_candidates if abs(c - estimated_lane[1]) < self.cluster_match_threshold]
+                    lc3_candidate = [c for c in lane_candidates if abs(c - estimated_lane[2]) < self.cluster_match_threshold]
+                    if not lc2_candidate:
+                        lc2_candidate.append(estimated_lane[1])
+                    if not lc3_candidate:
+                        lc3_candidate.append(estimated_lane[2])
+                    for lc2 in lc2_candidate:
+                        for lc3 in lc3_candidate:
+                            possibles.append([lc, lc2, lc3])
+
+                elif idx == 1:
+                    estimated_lane = [
+                        lc - self.left_to_center_dist / cos_angle,
+                        lc,
+                        lc + self.right_to_center_dist / cos_angle
+                    ]
+                    lc1_candidate = [c for c in lane_candidates if abs(c - estimated_lane[0]) < self.cluster_match_threshold]
+                    lc3_candidate = [c for c in lane_candidates if abs(c - estimated_lane[2]) < self.cluster_match_threshold]
+                    if not lc1_candidate:
+                        lc1_candidate.append(estimated_lane[0])
+                    if not lc3_candidate:
+                        lc3_candidate.append(estimated_lane[2])
+                    for lc1 in lc1_candidate:
+                        for lc3 in lc3_candidate:
+                            possibles.append([lc1, lc, lc3])
+
+                else:
+                    estimated_lane = [
+                        lc - self.outer_lane_dist / cos_angle,
+                        lc - self.right_to_center_dist / cos_angle,
+                        lc
+                    ]
+                    lc1_candidate = [c for c in lane_candidates if abs(c - estimated_lane[0]) < self.cluster_match_threshold]
+                    lc2_candidate = [c for c in lane_candidates if abs(c - estimated_lane[1]) < self.cluster_match_threshold]
+                    if not lc1_candidate:
+                        lc1_candidate.append(estimated_lane[0])
+                    if not lc2_candidate:
+                        lc2_candidate.append(estimated_lane[1])
+                    for lc1 in lc1_candidate:
+                        for lc2 in lc2_candidate:
+                            possibles.append([lc1, lc2, lc])
+
+        # 폴백: 조합이 없으면 예측값 사용
+        if len(possibles) == 0:
+            self.lane = predicted_lane
+            return
+
+        possibles = np.array(possibles, dtype=float)
         error = np.sum((possibles - predicted_lane) ** 2, axis=1)
         best = possibles[np.argmin(error)]
         new_lane = self.lane_update_weight * best + self.prediction_weight * predicted_lane
@@ -281,6 +325,7 @@ class Lane_Detector(Node):
         delta = new_lane - self.lane
         delta_clipped = np.clip(delta, -self.max_lane_delta, self.max_lane_delta)
         self.lane = self.lane + delta_clipped
+
 
     ### ===== 최종 결정된 차선 좌표들과 그 중앙값들을 이미지에 시각화하여 표시한다 =====
     def mark_lane(self, img, lane=None, show=False):

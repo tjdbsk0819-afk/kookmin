@@ -33,6 +33,7 @@ setup(
             'curve_subscriber = cam.curve_subscriber:main',
             'topic_stamper = cam.topic_stamper:main',
             'target_lane_planner = cam.target_lane_planner:main',
+            'ultra_node = cam.ultra_node:main',
         ],
     },
 )

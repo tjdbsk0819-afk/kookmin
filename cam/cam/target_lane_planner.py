@@ -7,7 +7,7 @@ import numpy as np
 from sensor_msgs.msg import Image, LaserScan
 from cv_bridge import CvBridge
 from std_msgs.msg import String
-from custom_interfaces.msg import Curve, Detections, ObstacleState
+from custom_interfaces.msg import Curve, Detections, ObstacleState, Ultrasonic
 import message_filters
 from ament_index_python.packages import get_package_share_directory
 from rclpy.qos import qos_profile_sensor_data
@@ -31,12 +31,13 @@ class TargetLanePlanner(Node):
         self.curve_subscription = message_filters.Subscriber(self, Curve, '/center_curve')
         self.yolo_subscription = message_filters.Subscriber(self, Detections, '/yolo_detections')
         self.scan_subscription = message_filters.Subscriber(self, LaserScan, '/scan', qos_profile=qos_profile_sensor_data)
+        self.ultra_subscription = message_filters.Subscriber(self, Ultrasonic, '/ultrasonic')
         
         self.obstacle_state_pub = self.create_publisher(ObstacleState, '/obstacle_state', 10)
         self.override_pub = self.create_publisher(String, '/lane_override_cmd', 10)
         
         self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
-            [self.image_subscription, self.curve_subscription, self.yolo_subscription, self.scan_subscription],
+            [self.image_subscription, self.curve_subscription, self.yolo_subscription, self.scan_subscription, self.ultra_subscription],
             queue_size=10, slop=0.1)
         self.time_synchronizer.registerCallback(self.synchronized_callback)
 
@@ -140,7 +141,7 @@ class TargetLanePlanner(Node):
         self.obstacle_state_pub.publish(obstacle_msg)
         return image
 
-    def synchronized_callback(self, image_msg, curve_msg, yolo_msg, scan_msg):
+    def synchronized_callback(self, image_msg, curve_msg, yolo_msg, scan_msg, ultra_msg):
         # ... (이하 synchronized_callback 및 main 함수는 기존과 동일) ...
         try:
             frame = self.bridge.imgmsg_to_cv2(image_msg, 'bgr8')
@@ -156,6 +157,12 @@ class TargetLanePlanner(Node):
             cv2.polylines(frame, [curve_pts], isClosed=False, color=(255, 0, 255), thickness=2)
         if curve_msg.state:
             cv2.putText(frame, f"Lane State: {curve_msg.state}", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2, cv2.LINE_AA)
+        
+        # 초음파 센서값 리스트
+        ultra_ranges = np.array(ultra_msg.data)
+        left_ultra = ultra_ranges[0]  # 좌측 초음파센서 값
+        right_ultra = ultra_ranges[4] # 우측 초음파센서 값
+
         vehicle_count = sum(1 for det in yolo_msg.detections if det.class_name == 'obstacle_vehicle')
         for det in yolo_msg.detections:
             if det.class_name == 'obstacle_vehicle':

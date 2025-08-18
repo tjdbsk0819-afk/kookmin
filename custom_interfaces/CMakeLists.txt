@@ -35,6 +35,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Detections.msg"
   "msg/ClusterData.msg"
   "msg/ConeData.msg"
+  "msg/Ultrasonic.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 
