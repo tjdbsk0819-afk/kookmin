@@ -9,7 +9,9 @@ from std_msgs.msg import String
 import cv2
 import numpy as np
 from collections import deque
-from custom_interfaces.msg import XycarState
+import message_filters
+from custom_interfaces.msg import XycarState, Detections
+
 
 # ===============================
 # 13pixels = 2.5cm (차선 폭)
@@ -52,8 +54,17 @@ class Lane_Detector(Node):
     def __init__(self):
         super().__init__('lane_detector')
 
-        self.img_sub = self.create_subscription(Image, '/image_raw', self.image_callback, 10)
-        self.trigger_sub = self.create_subscription(String,'/lane_override_cmd', self.trigger_callback, 10)
+        self.img_sub = message_filters.Subscriber(self, Image, '/image_raw')
+        self.detection_sub = message_filters.Subscriber(self, Detections, '/yolo_detections')
+
+        # --- 구독 동기화 ---
+        self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
+            [self.detection_sub, self.img_sub],
+            queue_size=10,
+            slop=0.1
+        )
+        self.time_synchronizer.registerCallback(self.synchronized_callback)
+        # -----------------
 
         self.xycar_state_pub = self.create_publisher(XycarState, '/xycar_state', 10)
 
@@ -99,7 +110,6 @@ class Lane_Detector(Node):
 
         # 8. trigger_callback
         self.override_target_lane = None            # 'go_right', 'go_left' 등
-
 
     ### ===== 원근 변환을 통해 영상을 탑다운 시점의 Bird's Eye View로 변환한다 =====
     def get_birds_eye_view(self, image):
@@ -359,8 +369,15 @@ class Lane_Detector(Node):
             pass
 
     ### ===== 수신된 이미지에서 차선을 인식하고, 최종 중앙 차선 위치와 각도를 계산하여 퍼블리시한다 =====
-    def image_callback(self, msg):
-        frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+    def synchronized_callback(self, detection_msg, image_msg):
+        frame = self.bridge.imgmsg_to_cv2(image_msg, 'bgr8')
+        
+        for detection in detection_msg.detections:
+            # 장애물 차량 감지한 경우, 해당 바운딩박스 영역을 검은색 픽셀로 덮기
+            if detection.class_name == 'obstacle_vehicle':
+                xmin, ymin, xmax, ymax = detection.xmin, detection.ymin, detection.xmax, detection.ymax
+                frame[ymin:ymax, xmin:xmax] = 0
+                
         canny = self.apply_canny(frame, show=False)
         bev, src = self.get_birds_eye_view(canny)
         self.show_roi_region(frame, src, show=False)

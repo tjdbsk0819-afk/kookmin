@@ -205,6 +205,7 @@ class IntegratedStanleyController(Node):
         # 메시지에서 거리와 위치 정보를 한 번에 업데이트
         self.relative_distance = msg.distance_m
         self.obstacle_position = msg.position.strip().lower()
+        self.detected_vehicle_count = msg.vehicle_count
         self.is_obstacle_detected = self.relative_distance < self.OBSTACLE_DETECTION_THRESHOLD
 
         # 회피 명령(차선 override) 발행
