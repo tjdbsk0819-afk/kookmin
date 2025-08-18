@@ -29,13 +29,15 @@ if(BUILD_TESTING)
 endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/Point2D.msg"
+  "msg/ClusterData.msg"
+  "msg/ConeData.msg"
   "msg/Curve.msg"
   "msg/Detection.msg"
   "msg/Detections.msg"
-  "msg/ClusterData.msg"
-  "msg/ConeData.msg"
+  "msg/ObstacleState.msg"
+  "msg/Point2D.msg"
   "msg/Ultrasonic.msg"
+  "msg/XycarState.msg"
   DEPENDENCIES std_msgs geometry_msgs
 )
 

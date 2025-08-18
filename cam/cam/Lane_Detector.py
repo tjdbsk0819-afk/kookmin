@@ -378,7 +378,7 @@ class Lane_Detector(Node):
                 xmin, ymin, xmax, ymax = detection.xmin, detection.ymin, detection.xmax, detection.ymax
                 frame[ymin:ymax, xmin:xmax] = 0
                 
-        canny = self.apply_canny(frame, show=False)
+        canny = self.apply_canny(frame, show=True)
         bev, src = self.get_birds_eye_view(canny)
         self.show_roi_region(frame, src, show=False)
         lines = self.detect_lines_hough(bev, show=False)
