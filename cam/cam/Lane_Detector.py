@@ -371,14 +371,17 @@ class Lane_Detector(Node):
     ### ===== 수신된 이미지에서 차선을 인식하고, 최종 중앙 차선 위치와 각도를 계산하여 퍼블리시한다 =====
     def synchronized_callback(self, detection_msg, image_msg):
         frame = self.bridge.imgmsg_to_cv2(image_msg, 'bgr8')
+        canny = self.apply_canny(frame, show=False)
         
         for detection in detection_msg.detections:
             # 장애물 차량 감지한 경우, 해당 바운딩박스 영역을 검은색 픽셀로 덮기
             if detection.class_name == 'obstacle_vehicle':
                 xmin, ymin, xmax, ymax = detection.xmin, detection.ymin, detection.xmax, detection.ymax
-                frame[ymin:ymax, xmin:xmax] = 0
+                canny[ymin:ymax, xmin:xmax] = 0
+
+        cv2.imshow('canny', canny)
+        cv2.waitKey(1)
                 
-        canny = self.apply_canny(frame, show=True)
         bev, src = self.get_birds_eye_view(canny)
         self.show_roi_region(frame, src, show=False)
         lines = self.detect_lines_hough(bev, show=False)

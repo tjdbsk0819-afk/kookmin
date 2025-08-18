@@ -51,11 +51,9 @@ def generate_launch_description():
         )
 
     ultrasonic_node = Node(
-        package='xycar_ultrasonic',  # <-- 이 부분을 실제 초음파 센서 패키지 이름으로 바꿔주세요.
-        executable='xycar_ultrasonic', # <-- CMakeLists.txt에 정의된 실행 파일 이름
-        name='xycar_ultrasonic_node',  # 런치 파일에서 노드를 구별하기 위한 이름 (자유롭게 지정)
-        output='screen',
-        emulate_tty=True
+        package='cam',  # <-- 이 부분을 실제 초음파 센서 패키지 이름으로 바꿔주세요.
+        executable='ultra_node', # <-- CMakeLists.txt에 정의된 실행 파일 이름
+        name='ultra_node',  # 런치 파일에서 노드를 구별하기 위한 이름
     )
 
 
@@ -69,7 +67,7 @@ def generate_launch_description():
         integrated_stanley_controller,
         yolo_node,
         yolo_lidar_fusion_node,
-
+        
         ultrasonic_node,
 
     ])

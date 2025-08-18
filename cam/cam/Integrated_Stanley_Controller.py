@@ -5,7 +5,7 @@ from rclpy.node import Node
 import numpy as np
 from std_msgs.msg import Float32MultiArray, String
 from collections import deque
-from cam_interfaces.msg import ObstacleState, XycarState, Curve  # Curve 구독
+from custom_interfaces.msg import ObstacleState, XycarState, Curve  # Curve 구독
 
 class IntegratedStanleyController(Node):
     def __init__(self):
@@ -338,7 +338,7 @@ def main(args=None):
     node = IntegratedStanleyController()
     try:
 		    # 노드를 생성한 후, 메인 스핀 루프에 들어가기 전에 모든 토픽이 준비될 때까지 대기합니다.
-        node.wait_for_messages()
+        node.wait_for_message()
         
         # 메인 스핀 루프 진입
         rclpy.spin(node)
