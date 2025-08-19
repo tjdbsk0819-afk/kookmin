@@ -5,7 +5,7 @@ from rclpy.node import Node
 import numpy as np
 from std_msgs.msg import Float32MultiArray, String
 from collections import deque
-from custom_interfaces.msg import ObstacleState, XycarState
+from custom_interfaces.msg import ObstacleState, XycarState, Curve
 
 class IntegratedStanleyController(Node):
     def __init__(self):
@@ -17,6 +17,7 @@ class IntegratedStanleyController(Node):
         # 구독자들
         self.xycar_state_sub = self.create_subscription(XycarState,'/xycar_state',self.xycar_state_callback,10)
         self.obstacle_state_sub = self.create_subscription(ObstacleState,'/obstacle_state',self.obstacle_state_callback,10)
+        self.curve_subscription = self.create_subscription(Curve, '/center_curve',self.curve_callback,10)
         # 퍼블리셔
         self.motor_pub = self.create_publisher(Float32MultiArray, '/xycar_motor', 10)
         self.last_time = self.get_clock().now()
@@ -52,7 +53,7 @@ class IntegratedStanleyController(Node):
         self.TARGET_TIME_GAP = 10.0
         self.OBSTACLE_DETECTION_THRESHOLD = 2.0    # 감지 거리
         self.KP_SPEED_CONTROL = 0.5                 # 제어 게인
-        self.MIN_SPEED = 2.0
+        self.MIN_SPEED = 4.0
         # 부드러운 가감속을 위한 파라미터
         self.ACCEL_STEP = 0.4
         self.DECEL_STEP = 0.7
@@ -72,6 +73,7 @@ class IntegratedStanleyController(Node):
         self.current_speed = self.MIN_SPEED        # 현재 실제 속도
         self.obstacle_position = 'none'
         self.detected_vehicle_count = 0
+        self.curve_state = 'straight'
         
         # 기타
         self.min_allowed_speed = min(self.speed_curve, self.speed_straight)
@@ -105,18 +107,18 @@ class IntegratedStanleyController(Node):
         self.angle_buffer.append(new_angle)
         return sum(self.angle_buffer) / len(self.angle_buffer)
 
-    def get_target_speed_and_k(self, servo_angle):
+    def get_target_speed_and_k(self, curve_state):
         """Stanley Controller의 목표 속도와 k값을 계산"""
         # 장애물 감지 시에는 k값만 설정하고 속도는 동적으로 제어됨
         if self.is_obstacle_detected:
             self.current_k = self.k_obstacle
             # 장애물 모드에서는 target_speed를 반환하지 않음 (동적 제어)
-            if abs(servo_angle) > self.steering_threshold:
+            if curve_state == "Curve":
                 target_speed = self.speed_curve
             else:
                 target_speed = self.speed_straight
         else:
-            if abs(servo_angle) > self.steering_threshold:
+            if curve_state == "Curve":
                 target_speed = self.speed_curve
                 self.current_k = self.k_curve
             else:
@@ -129,11 +131,11 @@ class IntegratedStanleyController(Node):
     #                   Obstacle Follower 메서드들
     # ==============================================================
     def calculate_final_speed(self, target_speed):
-            # --- [수정] 장애물 차량이 2대 이상일 때만 Follow 로직 실행 ---
-            condition_to_follow = (
-                self.is_obstacle_detected and
-                self.detected_vehicle_count >= 2
-            )
+            
+            is_in_curve = self.curve_state.lower() == 'curve'
+            condition1 = is_in_curve and self.is_obstacle_detected
+            condition2 = self.detected_vehicle_count >= 2
+            condition_to_follow = condition1 or condition2
 
             if condition_to_follow:
                 current_speed_mps = self.current_speed / 20.0 
@@ -159,6 +161,9 @@ class IntegratedStanleyController(Node):
     # ==============================================================
     #                           콜백 함수들
     # ==============================================================
+    def curve_callback(self, msg: Curve):
+        """중앙 차선의 커브 여부 콜백"""
+        self.curve_state = msg.state
 
     def obstacle_state_callback(self, msg: ObstacleState):
         """장애물 상태(거리 및 위치) 정보 콜백"""
@@ -200,7 +205,7 @@ class IntegratedStanleyController(Node):
         self.last_steering_deg = final_angle
 
         # 4. 목표 속도 계산 (기존과 동일)
-        target_speed, current_k = self.get_target_speed_and_k(smoothed_angle)
+        target_speed, current_k = self.get_target_speed_and_k(self.curve_state)
 
         # 5. 최종 속도 결정 (기존과 동일)
         final_speed, speed_status = self.calculate_final_speed(target_speed)

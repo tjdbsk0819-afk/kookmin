@@ -17,5 +17,20 @@ def generate_launch_description():
             package='cam',
             executable='yolo_node',
             name='yolo_node',
-        )
+        ),
+        Node(
+            package='cam',
+            executable='ultra_node',
+            name='ultra_node',
+        ),
+        Node(
+            package='cam',
+            executable='target_lane_planner',
+            name='target_lane_planner',
+        ),
+        Node(
+            package='cam',
+            executable='centerlane_tracer',
+            name='centerlane_tracer',
+        ),
     ])
