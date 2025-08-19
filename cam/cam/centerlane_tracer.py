@@ -38,7 +38,6 @@ import message_filters
 import math
 
 from scipy.interpolate import splprep, splev
-from std_srvs.srv import Trigger # <<< 1. Trigger 서비스 타입 임포트
 
 class CenterlaneTracer(Node):
     """
@@ -73,14 +72,6 @@ class CenterlaneTracer(Node):
         self.time_synchronizer.registerCallback(self.synchronized_callback)
 
         self.curve_publisher = self.create_publisher(Curve, '/center_curve', 10)
-
-        # <<< 2. 서비스 서버 생성 및 상태 플래그 초기화
-        self.is_active = False # 메인 로직 실행 여부를 결정하는 플래그
-        self.start_service = self.create_service(
-            Trigger,
-            'start_track_driving', # 서비스 이름
-            self.start_service_callback # 서비스 요청 시 호출될 콜백 함수
-        )
 
         if self.debug:
             self.main_window_name = 'Centerlane Tracer'
@@ -118,25 +109,6 @@ class CenterlaneTracer(Node):
 
         self.get_logger().info('CenterlaneTracer has been started.')
         self.get_logger().info('Waiting for service call on /start_track_driving to begin tracing...')
-
-
-    # <<< 3. 서비스 콜백 함수 추가
-    def start_service_callback(self, request, response):
-        """
-        서비스 호출을 받으면 is_active 플래그를 True로 설정하고,
-        메인 로직(synchronized_callback)이 실행되도록 합니다.
-        """
-        if not self.is_active:
-            self.is_active = True
-            self.get_logger().info('✅ Service called. Starting Centerlane Tracer main logic!')
-            response.success = True
-            response.message = 'Centerlane Tracer started.'
-        else:
-            self.get_logger().warn('⚠️ Main logic is already running.')
-            response.success = False
-            response.message = 'Already active.'
-
-        return response
 
     def _initialize_parameters(self):
         """
@@ -198,10 +170,6 @@ class CenterlaneTracer(Node):
             self.get_logger().info(f'Click at ({x}, {y}) | BGR: {bgr_pixel} -> HSV: {hsv_pixel}')
 
     def synchronized_callback(self, image_msg, yolo_msg):
-        # <<< 4. 메인 로직 실행 전, 활성화 상태 체크
-        if not self.is_active:
-            return # 비활성화 상태이면 함수를 즉시 종료
-
         if self.debug:
             self._update_params_from_trackbars()
         
@@ -243,6 +211,8 @@ class CenterlaneTracer(Node):
         )
 
         ratio = 1.0 # ratio 변수 초기화
+        
+        # ======================= [수정된 부분 시작] =========================
         if curve_points_to_draw:
             current_threshold = self.params['curve_thresh'] / 100.0
             current_frame_decision, ratio = self._get_current_frame_decision(curve_points_to_draw, current_threshold)
@@ -253,6 +223,16 @@ class CenterlaneTracer(Node):
             curve_msg.points = [Point2D(x=float(p[0]), y=float(p[1])) for p in curve_points_to_draw]
             curve_msg.state = self.lane_state 
             self.curve_publisher.publish(curve_msg)
+        else:
+            # 'center_line'이 탐지되지 않았을 때 빈 토픽을 발행하여 후속 노드의 동작을 보장
+            self._update_lane_state("Straight") # 차선이 없으면 직진 상태로 간주
+            
+            curve_msg = Curve()
+            curve_msg.header = image_msg.header # 타임스탬프 동기화를 위해 헤더는 필수!
+            curve_msg.points = [] # points 리스트를 비워서 보냄
+            curve_msg.state = self.lane_state # 현재 상태(Straight)를 설정
+            self.curve_publisher.publish(curve_msg)
+        # ======================= [수정된 부분 끝] ===========================
         
         # --- 시각화 로직 (Debug 모드일 때만 실행) ---
         if self.debug:
