@@ -68,6 +68,24 @@ def generate_launch_description():
         executable='lane_detector',
         name='lane_detector_node'
     )
+
+    centerlane_tracer_node = Node(
+        package='cam',
+        executable='centerlane_tracer',
+        name='centerlane_tracer_node'
+    )
+
+    target_lane_planner_node = Node(
+        package='cam',
+        executable='target_lane_planner',
+        name='target_lane_planner_node'
+    )
+
+    ultra_node = Node(
+        package='cam',
+        executable='ultra_node',
+        name='ultra_node'
+    )
     
     sign_detector_node = Node(
         package='cam',
@@ -135,10 +153,13 @@ def generate_launch_description():
         driver_node,
         lidar_to_rear_axle_tf,
         base_to_laser_tf,
-        rviz2_node,  # RViz2를 사용하지 않을 경우 주석 처리
-        cam_node,
-        # stanley_controller_node,
-        # lane_detector_node,
+        # rviz2_node,  # RViz2를 사용하지 않을 경우 주석 처리
+        # cam_node,
+        centerlane_tracer_node,
+        target_lane_planner_node,
+        ultra_node,
+        stanley_controller_node,
+        lane_detector_node,
         yolo_node,
         sign_detector_node,
         scan_rotator_node,

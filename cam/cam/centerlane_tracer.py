@@ -38,6 +38,7 @@ import message_filters
 import math
 
 from scipy.interpolate import splprep, splev
+from std_srvs.srv import Trigger # <<< 1. Trigger 서비스 타입 임포트
 
 class CenterlaneTracer(Node):
     """
@@ -72,6 +73,14 @@ class CenterlaneTracer(Node):
         self.time_synchronizer.registerCallback(self.synchronized_callback)
 
         self.curve_publisher = self.create_publisher(Curve, '/center_curve', 10)
+
+        # <<< 2. 서비스 서버 생성 및 상태 플래그 초기화
+        self.is_active = False # 메인 로직 실행 여부를 결정하는 플래그
+        self.start_service = self.create_service(
+            Trigger,
+            'start_track_driving', # 서비스 이름
+            self.start_service_callback # 서비스 요청 시 호출될 콜백 함수
+        )
 
         if self.debug:
             self.main_window_name = 'Centerlane Tracer'
@@ -108,6 +117,26 @@ class CenterlaneTracer(Node):
             self.get_logger().info("Debug mode OFF. Running in headless mode.")
 
         self.get_logger().info('CenterlaneTracer has been started.')
+        self.get_logger().info('Waiting for service call on /start_track_driving to begin tracing...')
+
+
+    # <<< 3. 서비스 콜백 함수 추가
+    def start_service_callback(self, request, response):
+        """
+        서비스 호출을 받으면 is_active 플래그를 True로 설정하고,
+        메인 로직(synchronized_callback)이 실행되도록 합니다.
+        """
+        if not self.is_active:
+            self.is_active = True
+            self.get_logger().info('✅ Service called. Starting Centerlane Tracer main logic!')
+            response.success = True
+            response.message = 'Centerlane Tracer started.'
+        else:
+            self.get_logger().warn('⚠️ Main logic is already running.')
+            response.success = False
+            response.message = 'Already active.'
+
+        return response
 
     def _initialize_parameters(self):
         """
@@ -169,6 +198,10 @@ class CenterlaneTracer(Node):
             self.get_logger().info(f'Click at ({x}, {y}) | BGR: {bgr_pixel} -> HSV: {hsv_pixel}')
 
     def synchronized_callback(self, image_msg, yolo_msg):
+        # <<< 4. 메인 로직 실행 전, 활성화 상태 체크
+        if not self.is_active:
+            return # 비활성화 상태이면 함수를 즉시 종료
+
         if self.debug:
             self._update_params_from_trackbars()
         

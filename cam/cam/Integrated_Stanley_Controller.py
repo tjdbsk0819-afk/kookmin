@@ -6,6 +6,7 @@ import numpy as np
 from std_msgs.msg import Float32MultiArray, String
 from collections import deque
 from custom_interfaces.msg import ObstacleState, XycarState, Curve
+from std_srvs.srv import Trigger # <<< 1. Trigger 서비스 타입 임포트
 
 class IntegratedStanleyController(Node):
     def __init__(self):
@@ -21,7 +22,18 @@ class IntegratedStanleyController(Node):
         # 퍼블리셔
         self.motor_pub = self.create_publisher(Float32MultiArray, '/xycar_motor', 10)
         self.last_time = self.get_clock().now()
+        
+        # <<< 2. 서비스 서버 생성 및 상태 플래그 초기화
+        self.is_active = False # 메인 제어 로직 실행 여부를 결정하는 플래그
+        self.start_service = self.create_service(
+            Trigger,
+            'start_track_driving', # 서비스 이름
+            self.start_service_callback # 서비스 요청 시 호출될 콜백 함수
+        )
+        
         self.get_logger().info('🎯 Integrated Stanley Controller Node Successfully Started❗')
+        self.get_logger().info('Waiting for service call on /start_track_driving to begin processing...')
+
 
         # ==============================================================
         #                   Stanley Controller 파라미터
@@ -79,6 +91,24 @@ class IntegratedStanleyController(Node):
         self.min_allowed_speed = min(self.speed_curve, self.speed_straight)
         self.max_allowed_speed = max(self.speed_curve, self.speed_straight)
 
+    # <<< 3. 서비스 콜백 함수 추가
+    def start_service_callback(self, request, response):
+        """
+        서비스 호출을 받으면 is_active 플래그를 True로 설정하고,
+        메인 제어 로직(xycar_state_callback)이 실행되도록 합니다.
+        """
+        if not self.is_active:
+            self.is_active = True
+            self.get_logger().info('✅ Service called. Starting Integrated Stanley Controller main logic!')
+            response.success = True
+            response.message = 'Integrated Stanley Controller started.'
+        else:
+            self.get_logger().warn('⚠️ Main logic is already running.')
+            response.success = False
+            response.message = 'Already active.'
+
+        return response
+        
     # ==============================================================
     #                   Stanley Controller 메서드들
     # ==============================================================
@@ -176,6 +206,10 @@ class IntegratedStanleyController(Node):
 
     def xycar_state_callback(self, msg: XycarState):
         """차선/주행모드 정보 콜백 - 메인 제어 로직"""
+        # <<< 4. 메인 로직 실행 전, 활성화 상태 체크
+        if not self.is_active:
+            return # 비활성화 상태이면 함수를 즉시 종료
+
         # 1. 메시지로부터 차선 정보와 주행 모드를 한 번에 업데이트
         self.current_mode = msg.drive_mode.strip().lower()
         

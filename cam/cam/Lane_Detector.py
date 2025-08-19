@@ -11,6 +11,7 @@ import numpy as np
 from collections import deque
 from custom_interfaces.msg import XycarState, Detections
 import message_filters
+from std_srvs.srv import Trigger # <<< 1. Trigger 서비스 타입 임포트
 
 # ===============================
 # 13pixels = 2.5cm (차선 폭)
@@ -41,8 +42,8 @@ class Lane_Detector(Node):
     def __init__(self):
         super().__init__('lane_detector')
 
+        # --- 기존 Subscriber 및 Publisher 설정 (변경 없음) ---
         self.trigger_sub = self.create_subscription(String,'/lane_override_cmd', self.trigger_callback, 10)
-
         self.img_sub = message_filters.Subscriber(self, Image, '/image_raw')
         self.detections_sub = message_filters.Subscriber(self, Detections, '/yolo_detections')
         self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
@@ -50,11 +51,19 @@ class Lane_Detector(Node):
             queue_size=10, slop=0.1
         )
         self.time_synchronizer.registerCallback(self.sync_callback)
-
         self.xycar_state_pub = self.create_publisher(XycarState, '/xycar_state', 10)
+
+        # ### <<< 2. 서비스 서버 생성 및 상태 플래그 초기화
+        self.is_active = False  # 메인 로직 실행 여부를 결정하는 플래그
+        self.start_service = self.create_service(
+            Trigger,
+            '/start_track_driving',  # 서비스 이름
+            self.start_service_callback  # 서비스 요청 시 호출될 콜백 함수
+        )
 
         self.bridge = CvBridge()
         self.get_logger().info('🛣️  Lane_Detector Node Started Successfully❗')
+        self.get_logger().info('Waiting for service call on /start_lane_detection to begin processing...')
 
         # 0. 초기값
         self.angle = 0.0
@@ -101,6 +110,23 @@ class Lane_Detector(Node):
         # 8. trigger_callback
         self.override_target_lane = None            # 'go_right', 'go_left' 등
 
+    # ### <<< 3. 서비스 콜백 함수 추가
+    def start_service_callback(self, request, response):
+        """
+        서비스 호출을 받으면 is_active 플래그를 True로 설정하고,
+        메인 로직(sync_callback)이 실행되도록 합니다.
+        """
+        if not self.is_active:
+            self.is_active = True
+            self.get_logger().info('✅ Service called. Starting lane detection main logic!')
+            response.success = True
+            response.message = 'Lane detection started.'
+        else:
+            self.get_logger().warn('⚠️ Main logic is already running.')
+            response.success = False
+            response.message = 'Already active.'
+
+        return response
 
     ### ===== 원근 변환을 통해 영상을 탑다운 시점의 Bird's Eye View로 변환한다 =====
     def get_birds_eye_view(self, image):
@@ -437,11 +463,15 @@ class Lane_Detector(Node):
 
     ### ===== 수신된 이미지에서 차선을 인식하고, 최종 중앙 차선 위치와 각도를 계산하여 퍼블리시한다 =====
     def sync_callback(self, img_msg, detections_msg):
+        # ### <<< 4. 메인 로직 실행 전, 활성화 상태 체크
+        if not self.is_active:
+            return  # 비활성화 상태이면 함수를 즉시 종료
+            
         frame = self.bridge.imgmsg_to_cv2(img_msg, 'bgr8')
         canny = self.apply_canny(frame, show=False)
         
         # Canny 이미지에서 감지된 객체 영역을 조건부로 마스킹 (시각화 활성화)
-        canny = self.mask_detected_objects(canny, detections_msg, frame, show=True)
+        canny = self.mask_detected_objects(canny, detections_msg, frame, show=False)
         
         bev, src = self.get_birds_eye_view(canny)
         self.show_roi_region(frame, src, show=False)
