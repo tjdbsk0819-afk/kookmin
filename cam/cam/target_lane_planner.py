@@ -1,5 +1,3 @@
-# target_lane_planner.py
-
 import rclpy
 from rclpy.node import Node
 import cv2
@@ -43,19 +41,20 @@ class TargetLanePlanner(Node):
         self.time_synchronizer.registerCallback(self.synchronized_callback)
 
         self.OVERTAKE_THRESHOLD_M = 2.0
-        # --- [추가] 상태 머신 관련 변수 ---
         self.driving_state = "CENTER_DRIVING"  # "CENTER_DRIVING" or "OVERTAKING"
-        self.overtake_timer = None
-        self.OVERTAKE_DURATION_S = 0.1  # 추월에 필요한 시간 (초), 튜닝 필요
         self.last_override_cmd = 'reset'
+
+        self.is_passing_obstacle = False    # 장애물 옆을 통과하고 있는지 여부
+        self.pass_complete_timer = None     # 장애물을 지나친 후 안전거리 확보를 위한 타이머
+        self.PASS_TIMER_DURATION_S = 0.1  # 안전거리 확보 시간 (0.1초)
 
         self.get_logger().info('🎯 Target Lane Planner has been started!')
 
-    def project_lidar_on_image(self, image, detections_msg, points_3d, curve_msg):
+    def project_lidar_on_image(self, image, detections_msg, points_3d, curve_msg,left_ultra,right_ultra):
         # 1. 모든 장애물 정보 수집 (기존과 동일)
         processed_obstacles = []
         detections = [det for det in detections_msg.detections if det.class_name == 'obstacle_vehicle']
-        # ... (이하 정보 수집 로직은 이전과 동일) ...
+
         h, w, _ = image.shape
         if points_3d.shape[0] == 0: img_pts = np.array([])
         else:
@@ -109,16 +108,19 @@ class TargetLanePlanner(Node):
             if num_detected_vehicles >= 2:
                 # 2대 이상 감지되면 무조건 Time_Gap 모드로 전환
                 self.driving_state = "Time_Gap"
-                self.get_logger().warn("STATE CHANGE: CENTER_DRIVING -> Time_Gap (2+ vehicles detected).")
-                if processed_obstacles: # 거리 측정된 차가 있으면 가장 먼 차 추종
+                self.get_logger().warn("STATE CHANGE: CENTER_DRIVING -> Time_Gap.")
+                if processed_obstacles: # 거리 측정된 차가 있으면 가장 가까운 차 추종
                     target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
-                    current_override_cmd = 'go_left' if target_obstacle['position'] == 'left' else 'go_right'
+                    current_override_cmd = 'reset'
+
             elif num_detected_vehicles == 1 and processed_obstacles:
                 # 1대 감지되고 거리 측정도 성공했다면, 추월 여부 판단
                 obstacle = processed_obstacles[0]
+
                 if obstacle['distance'] < self.OVERTAKE_THRESHOLD_M:
                     self.driving_state = "OVERTAKING"
-                    self.overtake_timer = self.get_clock().now()
+                    self.is_passing_obstacle = False
+                    self.pass_complete_timer = None
                     target_obstacle = obstacle
                     current_override_cmd = 'go_left' if target_obstacle['position'] == 'right' else 'go_right'
                     self.get_logger().warn(f"STATE CHANGE: CENTER_DRIVING -> OVERTAKING ({current_override_cmd}).")
@@ -127,31 +129,68 @@ class TargetLanePlanner(Node):
             else: # 감지된 차량이 없거나, 있어도 거리 측정을 못하면 중앙 주행 유지
                 current_override_cmd = 'reset'
 
-        # [상태 2] 추월 중 (OVERTAKING)
         elif self.driving_state == "OVERTAKING":
-            duration = self.get_clock().now() - self.overtake_timer
-            if duration.nanoseconds / 1e9 > self.OVERTAKE_DURATION_S:
-                self.driving_state = "CENTER_DRIVING"
-                self.overtake_timer = None
-                current_override_cmd = 'reset'
-                self.get_logger().info("STATE CHANGE: OVERTAKING -> CENTER_DRIVING.")
+            if processed_obstacles:
+                target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
+
+            current_override_cmd = self.last_override_cmd # 추월 중에는 차선 변경 명령 유지
+
+            # 1단계: 아직 장애물 옆을 지나치기 시작하지 않았을 때
+            if not self.is_passing_obstacle:
+                is_side_detected = (self.last_override_cmd == 'go_left' and right_ultra < 20) or \
+                                   (self.last_override_cmd == 'go_right' and left_ultra < 20)
+                if is_side_detected:
+                    self.is_passing_obstacle = True
+                    self.get_logger().info("Side of obstacle detected. Now passing alongside.")
+                else:
+                    self.get_logger().info(f"Approaching side... Left: {left_ultra}, Right: {right_ultra}")
+            
+            # 2단계: 장애물 옆을 지나치고 있을 때
             else:
-                current_override_cmd = self.last_override_cmd
-                self.get_logger().info(f"Overtaking... ({duration.nanoseconds / 1e9:.1f}s)")
-        
+                is_side_cleared = (self.last_override_cmd == 'go_left' and right_ultra > 20) or \
+                                  (self.last_override_cmd == 'go_right' and left_ultra > 20)
+
+                # 3단계: 장애물 끝을 통과하여 타이머를 시작해야 할 때
+                if is_side_cleared and self.pass_complete_timer is None:
+                    self.pass_complete_timer = self.get_clock().now()
+                    self.get_logger().info(f"Side of obstacle cleared. Starting {self.PASS_TIMER_DURATION_S}s safety timer.")
+                
+                # 타이머가 시작되었다면, 시간이 다 지났는지 확인
+                if self.pass_complete_timer is not None:
+                    duration = self.get_clock().now() - self.pass_complete_timer
+                    # 4단계: 타이머 종료 -> 추월 완료!
+                    if duration.nanoseconds / 1e9 > self.PASS_TIMER_DURATION_S:
+                        self.driving_state = "CENTER_DRIVING"
+                        current_override_cmd = 'reset'
+                        self.get_logger().warn("STATE CHANGE: OVERTAKING -> CENTER_DRIVING (Timer complete).")
+                        # 상태 변수 초기화
+                        self.is_passing_obstacle = False
+                        self.pass_complete_timer = None
+                    else:
+                        self.get_logger().info(f"Safety timer running... ({duration.nanoseconds / 1e9:.2f}s)")
+                # 아직 장애물 옆을 지나고 있는 경우 (통과 중 센서 값이 20 미만인 상태)
+                else:
+                     self.get_logger().info(f"Passing alongside... Left: {left_ultra}, Right: {right_ultra}")
+
         # [상태 3] 다중 차량 추종 (Time_Gap)
         elif self.driving_state == "Time_Gap":
+            # 조건 1: 차량이 2대 미만이면 즉시 중앙 주행으로 복귀 (상태 탈출)
             if num_detected_vehicles < 2:
-                # 차량이 2대 미만으로 줄면 중앙 주행으로 복귀
                 self.driving_state = "CENTER_DRIVING"
                 current_override_cmd = 'reset'
                 self.get_logger().warn("STATE CHANGE: Time_Gap -> CENTER_DRIVING (Vehicles < 2).")
-            else: # 2대 이상이면 계속 가장 먼 차 추종
+            
+            # 조건 2: 2대 이상이면 Time_Gap 상태 유지
+            else:
+                # Time_Gap 상태에서는 항상 중앙 차선을 유지합니다.
+                current_override_cmd = 'reset'
+                
+                # 거리 측정이 가능한 차량이 있다면, 그중 가장 가까운 차를 추종 타겟으로 삼습니다.
                 if processed_obstacles:
                     target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
-                    current_override_cmd = 'go_left' if target_obstacle['position'] == 'left' else 'go_right'
-                else: # 탐지는 됐지만 거리 정보가 없으면 일단 직진
-                    current_override_cmd = 'reset'
+                    self.get_logger().info(f"Time_Gap: Following closest vehicle at {target_obstacle['distance']:.1f}m.")
+                else:
+                    self.get_logger().info("Time_Gap: 2+ vehicles detected, but no distance info. Driving straight.")
 
         if current_override_cmd != self.last_override_cmd:
             cmd_msg = String(data=current_override_cmd)
@@ -171,14 +210,15 @@ class TargetLanePlanner(Node):
         return image
 
     def synchronized_callback(self, image_msg, curve_msg, yolo_msg, scan_msg, ultra_msg):
+        self.get_logger().info('--- 동기화 콜백 실행됨! ---')
         try:
             frame = self.bridge.imgmsg_to_cv2(image_msg, 'bgr8')
         except Exception as e:
             self.get_logger().error(f'Failed to convert image: {e}')
             return
         
-        left_ultra = np.array(ultra_msg)[0]
-        right_ultra = np.array(ultra_msg)[4]
+        left_ultra = ultra_msg.data[0]
+        right_ultra = ultra_msg.data[4]
 
         ranges = np.array(scan_msg.ranges)
         angles = scan_msg.angle_min + np.arange(len(scan_msg.ranges)) * scan_msg.angle_increment
@@ -215,8 +255,10 @@ class TargetLanePlanner(Node):
         
         # 현재 주행 상태를 화면에 표시
         cv2.putText(frame, f"State: {self.driving_state}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 100, 0), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Left Ultra: {left_ultra}", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Right Ultra: {right_ultra}", (20, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
-        frame = self.project_lidar_on_image(frame, yolo_msg, points_3d, curve_msg)
+        frame = self.project_lidar_on_image(frame, yolo_msg, points_3d, curve_msg,left_ultra,right_ultra)
         cv2.imshow("target_lane_planner : Integrated Visualization", frame)
         cv2.waitKey(1)
 

@@ -46,8 +46,8 @@ class UltraNode(Node):
 
             # publish
             self.publisher_.publish(ultra_msg)
-            self.get_logger().info(f"Published Ultrasonic Header: {ultra_msg.header.stamp}")
-            self.get_logger().info(f"Published Ultrasonic Data: {list(ultra_msg.data)}")
+            # self.get_logger().info(f"Published Ultrasonic Header: {ultra_msg.header.stamp}")
+            # self.get_logger().info(f"Published Ultrasonic Data: {list(ultra_msg.data)}")
 
 def main(args=None):
     rclpy.init(args=args)

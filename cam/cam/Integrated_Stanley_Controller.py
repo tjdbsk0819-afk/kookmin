@@ -19,7 +19,6 @@ class IntegratedStanleyController(Node):
         self.obstacle_state_sub = self.create_subscription(ObstacleState,'/obstacle_state',self.obstacle_state_callback,10)
         # 퍼블리셔
         self.motor_pub = self.create_publisher(Float32MultiArray, '/xycar_motor', 10)
-        self.override_pub = self.create_publisher(String, '/lane_override_cmd', 10)
         self.last_time = self.get_clock().now()
         self.get_logger().info('🎯 Integrated Stanley Controller Node Successfully Started❗')
 
@@ -50,10 +49,10 @@ class IntegratedStanleyController(Node):
         # ==============================================================
         #                   Obstacle Follower 파라미터
         # ==============================================================
-        self.TARGET_TIME_GAP = 5.0
+        self.TARGET_TIME_GAP = 10.0
         self.OBSTACLE_DETECTION_THRESHOLD = 2.0    # 감지 거리
         self.KP_SPEED_CONTROL = 0.5                 # 제어 게인
-        self.MIN_SPEED = 0.0
+        self.MIN_SPEED = 2.0
         # 부드러운 가감속을 위한 파라미터
         self.ACCEL_STEP = 0.4
         self.DECEL_STEP = 0.7
@@ -169,19 +168,6 @@ class IntegratedStanleyController(Node):
         self.detected_vehicle_count = msg.vehicle_count
         # 장애물 감지 여부 판단
         self.is_obstacle_detected = self.relative_distance < self.OBSTACLE_DETECTION_THRESHOLD
-        
-        # 회피 명령 로직 (기존 distance_callback의 로직과 동일)
-        if self.is_obstacle_detected and self.detected_vehicle_count == 1:
-            if self.obstacle_position == 'right':
-                self.get_logger().warn("🚨 Condition met! Sending 'go_left' command to Lane Detector.")
-                cmd_msg = String()
-                cmd_msg.data = 'go_left'
-                self.override_pub.publish(cmd_msg)
-            elif self.obstacle_position == 'left':
-                self.get_logger().warn("🚨 Condition met! Sending 'go_right' command to Lane Detector.")
-                cmd_msg = String()
-                cmd_msg.data = 'go_right'
-                self.override_pub.publish(cmd_msg)
 
     def xycar_state_callback(self, msg: XycarState):
         """차선/주행모드 정보 콜백 - 메인 제어 로직"""

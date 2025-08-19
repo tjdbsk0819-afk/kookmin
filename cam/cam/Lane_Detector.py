@@ -16,18 +16,6 @@ from custom_interfaces.msg import XycarState
 # 82.5cm (좌우차선 중앙을 끝점으로)
 # 41.25cm = 214.5pixels
 # ===============================
-
-# =============================================================================
-# 오른쪽 차선(중앙 + 오른쪽 중간)으로 주행
-# ros2 topic pub --once /lane_override_cmd std_msgs/String "data: 'go_right'"
-
-# 왼쪽 차선(왼쪽 + 중앙 중간)으로 주행
-# ros2 topic pub --once /lane_override_cmd std_msgs/String "data: 'go_left'"
-
-# 다시 중앙차선으로 복귀
-# ros2 topic pub --once /lane_override_cmd std_msgs/String "data: 'reset'"
-# =============================================================================
-
 clicked_points = []
 
 ### ===== 마우스 클릭으로 두 점을 선택해 x축 거리(px)를 계산하고 이미지에 표시한다 =====

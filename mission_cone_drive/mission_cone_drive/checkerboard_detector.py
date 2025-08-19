@@ -10,9 +10,6 @@ import time
 import threading
 import message_filters
 
-# [중요] 사용자 정의 메시지를 임포트합니다.
-# 'your_package_name'을 Detections 메시지가 정의된 실제 패키지 이름으로 변경해야 합니다.
-# 예: from vision_msgs.msg import Detections
 from custom_interfaces.msg import Detections
 
 
@@ -30,9 +27,9 @@ class CheckerBoard_Detector(Node):
         self.nodes_to_run = [
             {'package': 'cam', 'executable': 'integrated_stanley_controller'},
             {'package': 'cam', 'executable': 'lane_detector'},
-            {'package': 'lidar2cam_projector', 'executable': 'lidar2cam_projector'} ,
-            {'package': 'lidar2cam_projector', 'executable': 'yolo_lidar_fusion_node'},
-            {'package': 'objacc_controller', 'executable': 'objacc_controller'}
+            {'package': 'cam', 'executable': 'target_lane_planner'},
+            {'package': 'cam', 'executable': 'centerlane_tracer'},
+            {'package': 'cam', 'executable': 'ultra_node'},
         ]
         self.is_shutting_down = False # 종료 시퀀스가 중복 실행되는 것을 방지하기 위한 플래그
         # ------------------------------------
