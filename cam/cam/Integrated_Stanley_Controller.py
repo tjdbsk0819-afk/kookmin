@@ -44,8 +44,8 @@ class IntegratedStanleyController(Node):
         self.k_curve = 1.2              
         self.k_obstacle = 1.2          
 
-        self.speed_straight = 35.0                      
-        self.speed_curve = 20.0     
+        self.speed_straight = 20.0                      
+        self.speed_curve = 10.0     
 
         # ==============================================================
         #                   Obstacle Follower 파라미터

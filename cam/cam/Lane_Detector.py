@@ -9,7 +9,8 @@ from std_msgs.msg import String
 import cv2
 import numpy as np
 from collections import deque
-from custom_interfaces.msg import XycarState
+from custom_interfaces.msg import XycarState, Detections
+import message_filters
 
 # ===============================
 # 13pixels = 2.5cm (차선 폭)
@@ -40,8 +41,15 @@ class Lane_Detector(Node):
     def __init__(self):
         super().__init__('lane_detector')
 
-        self.img_sub = self.create_subscription(Image, '/image_raw', self.image_callback, 10)
         self.trigger_sub = self.create_subscription(String,'/lane_override_cmd', self.trigger_callback, 10)
+
+        self.img_sub = message_filters.Subscriber(self, Image, '/image_raw')
+        self.detections_sub = message_filters.Subscriber(self, Detections, '/yolo_detections')
+        self.time_synchronizer = message_filters.ApproximateTimeSynchronizer(
+            [self.img_sub, self.detections_sub],
+            queue_size=10, slop=0.1
+        )
+        self.time_synchronizer.registerCallback(self.sync_callback)
 
         self.xycar_state_pub = self.create_publisher(XycarState, '/xycar_state', 10)
 
@@ -51,6 +59,11 @@ class Lane_Detector(Node):
         # 0. 초기값
         self.angle = 0.0
         self.lane = np.array([120.0, 320.0, 520.0])  # 초기 왼쪽, 중앙, 오른쪽 차선의 x좌표
+
+        # 1. mask_detected_objects
+        self.last_seen_map = {}       # Key: grid_cell, Value: {'last_frame', 'bbox'}
+        self.grid_cell_size = 50      # 객체 중심점 기준 동일 객체로 판단할 격자 크기 (px)
+        self.frame_counter = 0        # 프레임 카운터
 
         # 2. apply_canny
         self.canny_low = 50
@@ -122,6 +135,83 @@ class Lane_Detector(Node):
         if show:
             cv2.imshow('canny', img)
         return img
+
+    ### ===== 감지된 객체 정보를 바탕으로 Canny 이미지의 특정 영역을 조건부로 마스킹한다 =====
+    def mask_detected_objects(self, canny_img, detections_msg, original_frame, show=False):
+        self.frame_counter += 1
+        modified_canny = canny_img.copy()
+        
+        if show:
+            viz_img = original_frame.copy()
+            final_mask_for_viz = np.zeros_like(modified_canny)
+
+        # --- 1. 현재 프레임 detection 정보 분리 ---
+        active_target_bboxes = set()
+        current_grid_cells = set()
+        
+        current_target_detections = [d for d in detections_msg.detections if d.class_name in ["checkerboard", "obstacle_vehicle"]]
+        lane_detections = [d for d in detections_msg.detections if d.class_name == "center_lane"]
+
+        # --- 2. 현재 감지된 객체 처리 및 추적기 업데이트 ---
+        for det in current_target_detections:
+            bbox = (det.xmin, det.ymin, det.xmax, det.ymax)
+            active_target_bboxes.add(bbox)
+            
+            center_x = (det.xmin + det.xmax) // 2
+            center_y = (det.ymin + det.ymax) // 2
+            grid_cell = (center_x // self.grid_cell_size, center_y // self.grid_cell_size)
+            current_grid_cells.add(grid_cell)
+
+            # 해당 격자의 마지막 감지 정보를 현재 프레임으로 갱신
+            self.last_seen_map[grid_cell] = {
+                'last_frame': self.frame_counter,
+                'bbox': bbox
+            }
+
+        # --- 3. 직전 프레임 대비 사라진 객체 보간 및 추적기 정리 ---
+        for cell, data in list(self.last_seen_map.items()):
+            # 직전 프레임에 있었지만 현재 프레임에 없는 경우
+            if self.frame_counter - 1 == data['last_frame'] and cell not in current_grid_cells:
+                active_target_bboxes.add(data['bbox']) # 보간할 bbox 추가
+            
+            # 2프레임 이상 오래된 기록은 추적기에서 삭제
+            if data['last_frame'] < self.frame_counter - 1:
+                del self.last_seen_map[cell]
+
+        # --- 4. 최종 마스킹 및 시각화 처리 ---
+        final_bboxes_to_mask = list(active_target_bboxes)
+        for t_bbox in final_bboxes_to_mask:
+            t_xmin, t_ymin, t_xmax, t_ymax = t_bbox
+            
+            overlapping_lanes_bboxes = []
+            for lane_det in lane_detections:
+                l_xmin, l_ymin, l_xmax, l_ymax = lane_det.xmin, lane_det.ymin, lane_det.xmax, lane_det.ymax
+                if not (t_xmax < l_xmin or t_xmin > l_xmax or t_ymax < l_ymin or t_ymin > l_ymax):
+                    overlapping_lanes_bboxes.append((l_xmin, l_ymin, l_xmax, l_ymax))
+
+            current_mask = np.zeros_like(modified_canny)
+            if not overlapping_lanes_bboxes:
+                cv2.rectangle(current_mask, (t_xmin, t_ymin), (t_xmax, t_ymax), 255, -1)
+            else:
+                cv2.rectangle(current_mask, (t_xmin, t_ymin), (t_xmax, t_ymax), 255, -1)
+                for l_bbox in overlapping_lanes_bboxes:
+                    cv2.rectangle(current_mask, (l_bbox[0], l_bbox[1]), (l_bbox[2], l_bbox[3]), 0, -1)
+
+            modified_canny[current_mask == 255] = 0
+            
+            if show:
+                final_mask_for_viz = cv2.bitwise_or(final_mask_for_viz, current_mask)
+
+        if show:
+            viz_img[final_mask_for_viz == 255] = (0, 0, 0)
+            contours, _ = cv2.findContours(final_mask_for_viz, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(viz_img, contours, -1, (0, 0, 255), 2)
+            
+            cv2.imshow("Object Masking Visualization", viz_img)
+            cv2.imshow("Masked Canny Image", modified_canny)
+            
+        return modified_canny
+
 
     ### ===== 확률적 허프 변환을 이용해 이미지에서 직선(선분)들을 검출한다 =====
     def detect_lines_hough(self, img, show=False):
@@ -346,9 +436,13 @@ class Lane_Detector(Node):
             pass
 
     ### ===== 수신된 이미지에서 차선을 인식하고, 최종 중앙 차선 위치와 각도를 계산하여 퍼블리시한다 =====
-    def image_callback(self, msg):
-        frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+    def sync_callback(self, img_msg, detections_msg):
+        frame = self.bridge.imgmsg_to_cv2(img_msg, 'bgr8')
         canny = self.apply_canny(frame, show=False)
+        
+        # Canny 이미지에서 감지된 객체 영역을 조건부로 마스킹 (시각화 활성화)
+        canny = self.mask_detected_objects(canny, detections_msg, frame, show=True)
+        
         bev, src = self.get_birds_eye_view(canny)
         self.show_roi_region(frame, src, show=False)
         lines = self.detect_lines_hough(bev, show=False)

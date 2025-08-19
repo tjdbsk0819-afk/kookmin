@@ -40,7 +40,8 @@ class TargetLanePlanner(Node):
             queue_size=10, slop=0.1)
         self.time_synchronizer.registerCallback(self.synchronized_callback)
 
-        self.OVERTAKE_THRESHOLD_M = 2.0
+        self.ULTAR_THRESHOLD = 30
+        self.OVERTAKE_THRESHOLD_M = 5.0
         self.driving_state = "CENTER_DRIVING"  # "CENTER_DRIVING" or "OVERTAKING"
         self.last_override_cmd = 'reset'
 
@@ -105,7 +106,7 @@ class TargetLanePlanner(Node):
 
         is_curve = curve_msg and curve_msg.state.lower() == 'curve'
 
-        if is_curve and num_detected_vehicles >= 1:
+        if is_curve and num_detected_vehicles >= 1 and self.driving_state != "OVERTAKING":
             # 1-1. 커브길일 경우, 무조건 Time_Gap 모드로 전환하여 차선 변경 없이 앞차를 추종
             self.driving_state = "Time_Gap"
             current_override_cmd = 'reset' # 차선 변경 금지
@@ -153,8 +154,8 @@ class TargetLanePlanner(Node):
 
                 # 1단계: 아직 장애물 옆을 지나치기 시작하지 않았을 때
                 if not self.is_passing_obstacle:
-                    is_side_detected = (self.last_override_cmd == 'go_left' and right_ultra < 20) or \
-                                       (self.last_override_cmd == 'go_right' and left_ultra < 20)
+                    is_side_detected = (self.last_override_cmd == 'go_left' and right_ultra < self.ULTAR_THRESHOLD) or \
+                                       (self.last_override_cmd == 'go_right' and left_ultra < self.ULTAR_THRESHOLD)
                     if is_side_detected:
                         self.is_passing_obstacle = True
                         self.get_logger().info("Side of obstacle detected. Now passing alongside.")
@@ -163,8 +164,8 @@ class TargetLanePlanner(Node):
                 
                 # 2단계: 장애물 옆을 지나치고 있을 때
                 else:
-                    is_side_cleared = (self.last_override_cmd == 'go_left' and right_ultra > 20) or \
-                                      (self.last_override_cmd == 'go_right' and left_ultra > 20)
+                    is_side_cleared = (self.last_override_cmd == 'go_left' and right_ultra > self.ULTAR_THRESHOLD) or \
+                                      (self.last_override_cmd == 'go_right' and left_ultra > self.ULTAR_THRESHOLD)
 
                     # 3단계: 장애물 끝을 통과하여 타이머를 시작해야 할 때
                     if is_side_cleared and self.pass_complete_timer is None:
