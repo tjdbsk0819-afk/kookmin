@@ -153,8 +153,8 @@ def generate_launch_description():
         driver_node,
         lidar_to_rear_axle_tf,
         base_to_laser_tf,
-        # rviz2_node,  # RViz2를 사용하지 않을 경우 주석 처리
-        # cam_node,
+        rviz2_node,  # RViz2를 사용하지 않을 경우 주석 처리
+        cam_node,
         centerlane_tracer_node,
         target_lane_planner_node,
         ultra_node,
