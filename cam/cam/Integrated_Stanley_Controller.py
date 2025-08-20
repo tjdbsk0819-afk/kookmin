@@ -56,8 +56,8 @@ class IntegratedStanleyController(Node):
         self.k_curve = 1.2              
         self.k_obstacle = 1.2          
 
-        self.speed_straight = 20.0                      
-        self.speed_curve = 10.0     
+        self.speed_straight = 30.0                      
+        self.speed_curve = 20.0     
 
         # ==============================================================
         #                   Obstacle Follower 파라미터
@@ -163,7 +163,7 @@ class IntegratedStanleyController(Node):
     def calculate_final_speed(self, target_speed):
             
             is_in_curve = self.curve_state.lower() == 'curve'
-            condition1 = is_in_curve and self.is_obstacle_detected
+            condition1 = is_in_curve and self.is_obstacle_detected and self.current_mode == 'center'
             condition2 = self.detected_vehicle_count >= 2
             condition_to_follow = condition1 or condition2
 

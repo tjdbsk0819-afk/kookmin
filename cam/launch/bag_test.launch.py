@@ -33,4 +33,9 @@ def generate_launch_description():
             executable='centerlane_tracer',
             name='centerlane_tracer',
         ),
+        Node(
+        package='mission_cone_drive',
+        executable='checkerboard_detector',
+        name='checkerboard_node'
+    ),
     ])

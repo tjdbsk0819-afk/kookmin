@@ -20,6 +20,7 @@ class CheckerBoard_Detector(Node):
 
         # --- 노드 제어 설정 ---
         self.nodes_to_kill = [
+            "scan_rotator_node",
             "pure_pursuit_node",
             "path_planning_node",
             "preprocessing_node"

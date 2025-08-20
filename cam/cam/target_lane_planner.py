@@ -41,6 +41,7 @@ class TargetLanePlanner(Node):
         self.time_synchronizer.registerCallback(self.synchronized_callback)
 
         self.ULTAR_THRESHOLD = 30
+        self.ULTAR_BACK_THRESHOLD = 50
         self.OVERTAKE_THRESHOLD_M = 5.0
         self.driving_state = "CENTER_DRIVING"  # "CENTER_DRIVING" or "OVERTAKING"
         self.last_override_cmd = 'reset'
@@ -51,7 +52,7 @@ class TargetLanePlanner(Node):
 
         self.get_logger().info('🎯 Target Lane Planner has been started!')
 
-    def project_lidar_on_image(self, image, detections_msg, points_3d, curve_msg,left_ultra,right_ultra):
+    def project_lidar_on_image(self, image, detections_msg, points_3d, curve_msg,left_ultra,right_ultra,left_back_ultra,right_back_ultra):
         # 1. 모든 장애물 정보 수집 (기존과 동일)
         processed_obstacles = []
         detections = [det for det in detections_msg.detections if det.class_name == 'obstacle_vehicle']
@@ -164,8 +165,8 @@ class TargetLanePlanner(Node):
                 
                 # 2단계: 장애물 옆을 지나치고 있을 때
                 else:
-                    is_side_cleared = (self.last_override_cmd == 'go_left' and right_ultra > self.ULTAR_THRESHOLD) or \
-                                      (self.last_override_cmd == 'go_right' and left_ultra > self.ULTAR_THRESHOLD)
+                    is_side_cleared = (self.last_override_cmd == 'go_left' and right_ultra > self.ULTAR_THRESHOLD and right_back_ultra > self.ULTAR_BACK_THRESHOLD) or \
+                                      (self.last_override_cmd == 'go_right' and left_ultra > self.ULTAR_THRESHOLD and left_back_ultra > self.ULTAR_BACK_THRESHOLD)
 
                     # 3단계: 장애물 끝을 통과하여 타이머를 시작해야 할 때
                     if is_side_cleared and self.pass_complete_timer is None:
@@ -228,7 +229,7 @@ class TargetLanePlanner(Node):
         return image
 
     def synchronized_callback(self, image_msg, curve_msg, yolo_msg, scan_msg, ultra_msg):
-        self.get_logger().info('--- 동기화 콜백 실행됨! ---')
+        # self.get_logger().info('--- 동기화 콜백 실행됨! ---')
         try:
             frame = self.bridge.imgmsg_to_cv2(image_msg, 'bgr8')
         except Exception as e:
@@ -237,11 +238,17 @@ class TargetLanePlanner(Node):
         
         # 기본값으로 초기화
         left_ultra = 100
+        left_back_ultra = 999
         right_ultra = 100
+        right_back_ultra = 999
 
         # ultra_msg.data의 길이를 확인하는 방어 코드 추가
         if len(ultra_msg.data) > 0:
             left_ultra = ultra_msg.data[0]
+        if len(ultra_msg.data) > 7:
+            left_back_ultra = ultra_msg.data[7]      
+        if len(ultra_msg.data) > 5:
+            right_back_ultra = ultra_msg.data[5]          
         if len(ultra_msg.data) > 4:
             right_ultra = ultra_msg.data[4]
         else:
@@ -284,9 +291,11 @@ class TargetLanePlanner(Node):
         # 현재 주행 상태를 화면에 표시
         cv2.putText(frame, f"State: {self.driving_state}", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 100, 0), 2, cv2.LINE_AA)
         cv2.putText(frame, f"Left Ultra: {left_ultra}", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Left Back Ultra: {left_back_ultra}", (20, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
         cv2.putText(frame, f"Right Ultra: {right_ultra}", (20, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(frame, f"Right Back Ultra: {right_back_ultra}", (20, 280), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
-        frame = self.project_lidar_on_image(frame, yolo_msg, points_3d, curve_msg,left_ultra,right_ultra)
+        frame = self.project_lidar_on_image(frame, yolo_msg, points_3d, curve_msg,left_ultra,right_ultra,left_back_ultra,right_back_ultra)
         cv2.imshow("target_lane_planner : Integrated Visualization", frame)
         cv2.waitKey(1)
 
