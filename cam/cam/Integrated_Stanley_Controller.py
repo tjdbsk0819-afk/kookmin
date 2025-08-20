@@ -75,7 +75,7 @@ class IntegratedStanleyController(Node):
         self.max_delta_angle = 15.0
         self.window = 1
         self.steering_threshold = 3.0
-        self.k_straight = 1.2
+        self.k_straight = 1.0
         self.k_curve = 1.2
         self.k_obstacle = 1.2
         self.speed_straight = 35.0
@@ -84,10 +84,10 @@ class IntegratedStanleyController(Node):
         # ==============================================================
         #                   Obstacle Follower 파라미터
         # ==============================================================
-        self.TARGET_TIME_GAP = 5.0
+        self.TARGET_TIME_GAP = 10.0
         self.OBSTACLE_DETECTION_THRESHOLD = 2.0
         self.KP_SPEED_CONTROL = 0.5
-        self.MIN_SPEED = 0.0
+        self.MIN_SPEED = 4.0
         self.ACCEL_STEP = 0.4
         self.DECEL_STEP = 1.0
 
@@ -172,7 +172,7 @@ class IntegratedStanleyController(Node):
     # ==============================================================
     def calculate_final_speed(self, target_speed):
             is_in_curve = self.curve_state.lower() == 'curve'
-            condition1 = is_in_curve and self.is_obstacle_detected 
+            condition1 = is_in_curve and self.is_obstacle_detected
             condition2 = self.detected_vehicle_count >= 2
             condition_to_follow = condition1 or condition2
 
