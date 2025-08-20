@@ -90,7 +90,7 @@ class Lane_Detector(Node):
         self.cluster_match_threshold = 70           ### 예상된 차선 위치와 실제 후보 간의 허용 거리
         self.lane_update_weight = 0.7               ### 최종 차선 위치 계산 시 현재 관측값에 대한 반영 비율
         self.prediction_weight = 0.3                ### 최종 차선 위치 계산 시 예측값에 대한 반영 비율
-        self.max_lane_delta = 30                    # 한 프레임에서 허용되는 최대 차선 변화량 [픽셀]
+        self.max_lane_delta = 50                    # 한 프레임에서 허용되는 최대 차선 변화량 [픽셀]
 
         # 8. trigger_callback
         self.override_target_lane = None            # 'go_right', 'go_left' 등
