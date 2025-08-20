@@ -110,7 +110,7 @@ class TargetLanePlanner(Node):
         if is_curve and num_detected_vehicles >= 1 and self.driving_state != "OVERTAKING":
             # 1-1. 커브길일 경우, 무조건 Time_Gap 모드로 전환하여 차선 변경 없이 앞차를 추종
             self.driving_state = "Time_Gap"
-            current_override_cmd = 'reset' # 차선 변경 금지
+            current_override_cmd = 'go_left' if target_obstacle['position'] == 'left' else 'go_right'
             self.get_logger().info("CURVE DETECTED: Forcing Time_Gap mode to follow lane safely.")
             
             # 거리 측정이 가능한 차량 중 가장 가까운 차를 추종 타겟으로 설정

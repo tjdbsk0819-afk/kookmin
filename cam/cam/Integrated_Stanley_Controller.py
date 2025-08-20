@@ -54,7 +54,7 @@ class IntegratedStanleyController(Node):
 
         self.k_straight = 1.0                      
         self.k_curve = 1.2              
-        self.k_obstacle = 1.2          
+        self.k_obstacle = 1.5          
 
         self.speed_straight = 30.0                      
         self.speed_curve = 20.0     
@@ -137,18 +137,26 @@ class IntegratedStanleyController(Node):
         self.angle_buffer.append(new_angle)
         return sum(self.angle_buffer) / len(self.angle_buffer)
 
-    def get_target_speed_and_k(self, curve_state):
-        """Stanley Controller의 목표 속도와 k값을 계산"""
-        # 장애물 감지 시에는 k값만 설정하고 속도는 동적으로 제어됨
+    def get_target_speed_and_k(self, servo_angle):
+        """
+        Stanley Controller의 목표 속도와 k값을 계산합니다.
+        조향각이 임계값을 넘는 경우에도 커브로 간주하는 안전 로직이 추가되었습니다.
+        """
+        # 조건 1: 차선 정보가 커브라고 명시 ('Curve')
+        # 조건 2: 최종 조향각의 절대값이 설정된 임계값보다 큼
+        is_curve_situation = (abs(servo_angle) > self.steering_threshold)
+
+        # 장애물 감지 시에는 k값만 설정하고 속도는 동적으로 제어
         if self.is_obstacle_detected:
             self.current_k = self.k_obstacle
-            # 장애물 모드에서는 target_speed를 반환하지 않음 (동적 제어)
-            if curve_state == "Curve":
+            # 장애물 모드에서도 커브/직선 상황에 따라 기본 목표 속도는 설정
+            if is_curve_situation:
                 target_speed = self.speed_curve
             else:
                 target_speed = self.speed_straight
+        # 장애물이 없을 경우
         else:
-            if curve_state == "Curve":
+            if is_curve_situation:
                 target_speed = self.speed_curve
                 self.current_k = self.k_curve
             else:
@@ -156,7 +164,6 @@ class IntegratedStanleyController(Node):
                 self.current_k = self.k_straight
         
         return target_speed, self.current_k
-
     # ==============================================================
     #                   Obstacle Follower 메서드들
     # ==============================================================
@@ -239,7 +246,7 @@ class IntegratedStanleyController(Node):
         self.last_steering_deg = final_angle
 
         # 4. 목표 속도 계산 (기존과 동일)
-        target_speed, current_k = self.get_target_speed_and_k(self.curve_state)
+        target_speed, current_k = self.get_target_speed_and_k(smoothed_angle)
 
         # 5. 최종 속도 결정 (기존과 동일)
         final_speed, speed_status = self.calculate_final_speed(target_speed)
@@ -255,44 +262,48 @@ class IntegratedStanleyController(Node):
                        target_speed, final_speed, speed_status, rate_limited)
         
     def log_status(self, heading_error_rad, cte_term, current_k, final_angle, 
-                   target_speed, final_speed, speed_status, rate_limited):
-        """상태 로깅"""
-        # 차선 타겟 모드 표시
-        if self.current_mode == 'center':
-            lane_target_str = "🟡 CENTER"
-        elif self.current_mode == 'left':
-            lane_target_str = "🔵 LEFT"
-        elif self.current_mode == 'right':
-            lane_target_str = "🔴 RIGHT"
-        else:
-            lane_target_str = "⚪ UNKNOWN"
+                    target_speed, final_speed, speed_status, rate_limited):
+            """상태 로깅"""
+            # 차선 타겟 모드 표시
+            if self.current_mode == 'center':
+                lane_target_str = "🟡 CENTER"
+            elif self.current_mode == 'left':
+                lane_target_str = "🔵 LEFT"
+            elif self.current_mode == 'right':
+                lane_target_str = "🔴 RIGHT"
+            else:
+                lane_target_str = "⚪ UNKNOWN"
 
-        # 주행 모드 표시 (장애물 감지 기반)
-        if self.is_obstacle_detected:
-            driving_mode = "🚧 OBSTACLE MODE"
-        else:
-            driving_mode = "🔄 CURVE MODE" if abs(final_angle) > self.steering_threshold else "➡️ STRAIGHT MODE"
+            # 주행 모드 표시 (장애물 감지 및 조향각 기반)
+            if self.is_obstacle_detected:
+                driving_mode = "🚧 OBSTACLE MODE"
+            else:
+                # 차선 정보가 'Curve'이거나 조향각이 임계값을 넘으면 CURVE MODE로 판단
+                is_curve_situation = (self.curve_state.lower() == "curve") or (abs(final_angle) > self.steering_threshold)
+                if is_curve_situation:
+                    driving_mode = "🔄 CURVE MODE"
+                else:
+                    driving_mode = "➡️ STRAIGHT MODE"
+            # Rate limiting 표시
+            rate_limit_marker = "⛔" if rate_limited else ""
+            
+            # 장애물 상태 표시
+            obstacle_status = f"🚗 Dist: {self.relative_distance:.2f}m" if self.is_obstacle_detected else "🟢 Clear"
 
-        # Rate limiting 표시
-        rate_limit_marker = "⛔" if rate_limited else ""
-        
-        # 장애물 상태 표시
-        obstacle_status = f"🚗 Dist: {self.relative_distance:.2f}m" if self.is_obstacle_detected else "🟢 Clear"
-
-        # 로그 출력 (매 프레임)
-        self.get_logger().info(
-            "\n📐 [Integrated Stanley Controller Log] ---------------\n"
-            f"  • Lane Target       : {lane_target_str}\n"
-            f"  • Driving Mode      : {driving_mode}\n"
-            f"  • Obstacle Status   : {obstacle_status}\n"
-            f"  • Stanley K Value   : {current_k:>6.2f}\n"
-            f"  • Heading Error     : {np.degrees(heading_error_rad):>6.2f}°\n"
-            f"  • Cross Track Term  : {np.degrees(cte_term):>6.2f}°\n"
-            f"  • Servo Angle       : {final_angle:>6.2f} {rate_limit_marker}\n"
-            f"  • Target Speed      : {target_speed:>6.2f}\n"
-            f"  • Final Speed       : {final_speed:>6.2f} {speed_status}\n"
-            "--------------------------------------------------------"
-        )
+            # 로그 출력 (매 프레임)
+            self.get_logger().info(
+                "\n📐 [Integrated Stanley Controller Log] ---------------\n"
+                f"  • Lane Target       : {lane_target_str}\n"
+                f"  • Driving Mode      : {driving_mode}\n"
+                f"  • Obstacle Status   : {obstacle_status}\n"
+                f"  • Stanley K Value   : {current_k:>6.2f}\n"
+                f"  • Heading Error     : {np.degrees(heading_error_rad):>6.2f}°\n"
+                f"  • Cross Track Term  : {np.degrees(cte_term):>6.2f}°\n"
+                f"  • Servo Angle       : {final_angle:>6.2f} {rate_limit_marker}\n"
+                f"  • Target Speed      : {target_speed:>6.2f}\n"
+                f"  • Final Speed       : {final_speed:>6.2f} {speed_status}\n"
+                "--------------------------------------------------------"
+            )
 
 def main(args=None):
     rclpy.init(args=args)

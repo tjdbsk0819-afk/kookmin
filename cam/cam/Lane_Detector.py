@@ -20,22 +20,7 @@ from std_srvs.srv import Trigger # <<< 1. Trigger 서비스 타입 임포트
 # ===============================
 clicked_points = []
 
-### ===== 마우스 클릭으로 두 점을 선택해 x축 거리(px)를 계산하고 이미지에 표시한다 =====
-def click_and_measure(event, x, y, flags, param):
-    global clicked_points
-    if event == cv2.EVENT_LBUTTONDOWN:
-        clicked_points.append((x, y))
-        print(f'Point {len(clicked_points)}: ({x}, {y})')
-        if len(clicked_points) == 2:
-            pt1, pt2 = clicked_points
-            dist = abs(pt1[0] - pt2[0])
-            print(f'X-distance between points: {dist:.2f} pixels')
-            marked_img = param.copy()
-            cv2.line(marked_img, pt1, pt2, (255, 255, 0), 2)
-            mid_pt = ((pt1[0]+pt2[0])//2, (pt1[1]+pt2[1])//2)
-            cv2.putText(marked_img, f"X distance{dist:.1f}px", mid_pt, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,255), 2)
-            cv2.imshow("marked", marked_img)
-            clicked_points = []
+
 
 class Lane_Detector(Node):
 
@@ -324,48 +309,68 @@ class Lane_Detector(Node):
         
     ### ===== 예측된 차선과 후보 차선을 비교하여 가장 유사한 조합을 선택하고 최종 차선 위치를 보정한다 =====
     def refine_lane_with_candidates_and_prediction(self, lane_candidates, predicted_lane):
-        if not lane_candidates:
-            self.lane = predicted_lane
-            return
+            # Override 모드에서 기준 차선이 화면을 벗어났는지 확인하고 자동 복귀
+            if self.override_target_lane == 'go_left':
+                if predicted_lane[0] < 0 or predicted_lane[0] >= self.bev_img_w:
+                    self.get_logger().warn('⚠️ Left lane out of view, switching back to normal mode')
+                    self.override_target_lane = None
+            elif self.override_target_lane == 'go_right':
+                if predicted_lane[2] < 0 or predicted_lane[2] >= self.bev_img_w:
+                    self.get_logger().warn('⚠️ Right lane out of view, switching back to normal mode')
+                    self.override_target_lane = None
 
-        mode = self.override_target_lane  # None, 'go_left', 'go_right'
-        possibles = []
-        cos_angle = max(np.cos(self.angle), self.min_cos_angle)
+            # Override 모드일 때는 특정 차선만 기준으로 처리
+            if self.override_target_lane == 'go_left':
+                # 왼쪽 차선만 기준으로 계산
+                cos_angle = max(np.cos(self.angle), self.min_cos_angle)
+                left_candidates = [lc for lc in lane_candidates if abs(lc - predicted_lane[0]) < self.cluster_match_threshold]
+                
+                if left_candidates:
+                    # 가장 가까운 왼쪽 차선 후보 선택
+                    best_left = min(left_candidates, key=lambda x: abs(x - predicted_lane[0]))
+                    new_lane = np.array([
+                        best_left,
+                        best_left + self.left_to_center_dist / cos_angle,
+                        best_left + self.outer_lane_dist / cos_angle
+                    ])
+                    # 부드러운 업데이트
+                    delta = new_lane - self.lane
+                    delta_clipped = np.clip(delta, -self.max_lane_delta, self.max_lane_delta)
+                    self.lane = self.lane + delta_clipped
+                else:
+                    # 왼쪽 차선을 찾지 못했을 경우 예측값만 사용
+                    self.lane = predicted_lane
+                return
+                    
+            elif self.override_target_lane == 'go_right':
+                # 오른쪽 차선만 기준으로 계산
+                cos_angle = max(np.cos(self.angle), self.min_cos_angle)
+                right_candidates = [lc for lc in lane_candidates if abs(lc - predicted_lane[2]) < self.cluster_match_threshold]
+                
+                if right_candidates:
+                    # 가장 가까운 오른쪽 차선 후보 선택
+                    best_right = min(right_candidates, key=lambda x: abs(x - predicted_lane[2]))
+                    new_lane = np.array([
+                        best_right - self.outer_lane_dist / cos_angle,
+                        best_right - self.right_to_center_dist / cos_angle,
+                        best_right
+                    ])
+                    # 부드러운 업데이트
+                    delta = new_lane - self.lane
+                    delta_clipped = np.clip(delta, -self.max_lane_delta, self.max_lane_delta)
+                    self.lane = self.lane + delta_clipped
+                else:
+                    # 오른쪽 차선을 찾지 못했을 경우 예측값만 사용
+                    self.lane = predicted_lane
+                return
 
-        # === 1) override 분기: go_left / go_right 일 때 기준차선 강제 ===
-        if mode in ('go_left', 'go_right'):
-            for lc in lane_candidates:
-                if not (0 <= lc < self.bev_img_w):
-                    continue
-
-                if mode == 'go_left':
-                    # lc를 '왼쪽차선'으로 고정(앵커)
-                    estimated_lane = [
-                        lc,
-                        lc + self.left_to_center_dist / cos_angle,
-                        lc + self.outer_lane_dist / cos_angle
-                    ]
-                    lc2_candidate = [c for c in lane_candidates if abs(c - estimated_lane[1]) < self.cluster_match_threshold] or [estimated_lane[1]]
-                    lc3_candidate = [c for c in lane_candidates if abs(c - estimated_lane[2]) < self.cluster_match_threshold] or [estimated_lane[2]]
-                    for lc2 in lc2_candidate:
-                        for lc3 in lc3_candidate:
-                            possibles.append([lc, lc2, lc3])
-
-                else:  # mode == 'go_right'
-                    # lc를 '오른쪽차선'으로 고정(앵커)
-                    estimated_lane = [
-                        lc - self.outer_lane_dist / cos_angle,
-                        lc - self.right_to_center_dist / cos_angle,
-                        lc
-                    ]
-                    lc1_candidate = [c for c in lane_candidates if abs(c - estimated_lane[0]) < self.cluster_match_threshold] or [estimated_lane[0]]
-                    lc2_candidate = [c for c in lane_candidates if abs(c - estimated_lane[1]) < self.cluster_match_threshold] or [estimated_lane[1]]
-                    for lc1 in lc1_candidate:
-                        for lc2 in lc2_candidate:
-                            possibles.append([lc1, lc2, lc])
-
-        # === 2) 기본 모드: 기존 로직 그대로 유지 ===
-        else:
+            # 원래 방식 (reset 모드 또는 초기 상태 또는 자동 복귀된 상태)
+            if not lane_candidates:
+                self.lane = predicted_lane
+                return
+            
+            possibles = []
+            cos_angle = max(np.cos(self.angle), self.min_cos_angle)
             for lc in lane_candidates:
                 idx = np.argmin(abs(self.lane - lc))
                 if idx == 0:
@@ -383,7 +388,6 @@ class Lane_Detector(Node):
                     for lc2 in lc2_candidate:
                         for lc3 in lc3_candidate:
                             possibles.append([lc, lc2, lc3])
-
                 elif idx == 1:
                     estimated_lane = [
                         lc - self.left_to_center_dist / cos_angle,
@@ -399,7 +403,6 @@ class Lane_Detector(Node):
                     for lc1 in lc1_candidate:
                         for lc3 in lc3_candidate:
                             possibles.append([lc1, lc, lc3])
-
                 else:
                     estimated_lane = [
                         lc - self.outer_lane_dist / cos_angle,
@@ -415,21 +418,15 @@ class Lane_Detector(Node):
                     for lc1 in lc1_candidate:
                         for lc2 in lc2_candidate:
                             possibles.append([lc1, lc2, lc])
+            
+            possibles = np.array(possibles)
+            error = np.sum((possibles - predicted_lane) ** 2, axis=1)
+            best = possibles[np.argmin(error)]
+            new_lane = self.lane_update_weight * best + self.prediction_weight * predicted_lane
 
-        # 폴백: 조합이 없으면 예측값 사용
-        if len(possibles) == 0:
-            self.lane = predicted_lane
-            return
-
-        possibles = np.array(possibles, dtype=float)
-        error = np.sum((possibles - predicted_lane) ** 2, axis=1)
-        best = possibles[np.argmin(error)]
-        new_lane = self.lane_update_weight * best + self.prediction_weight * predicted_lane
-
-        delta = new_lane - self.lane
-        delta_clipped = np.clip(delta, -self.max_lane_delta, self.max_lane_delta)
-        self.lane = self.lane + delta_clipped
-
+            delta = new_lane - self.lane
+            delta_clipped = np.clip(delta, -self.max_lane_delta, self.max_lane_delta)
+            self.lane = self.lane + delta_clipped
     ### ===== 최종 결정된 차선 좌표들과 그 중앙값들을 이미지에 시각화하여 표시한다 =====
     def mark_lane(self, img, lane=None, show=False):
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
@@ -447,9 +444,13 @@ class Lane_Detector(Node):
         cv2.circle(img, (int(mid_right), self.bev_img_mid), 4, (0, 255, 0), 4, cv2.FILLED)  # GREEN
         cv2.putText(img, 'go_R', (int(mid_right)-20, self.bev_img_mid - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 1)
 
+                # Override 모드 표시
+        if self.override_target_lane:
+            cv2.putText(img, f'Override: {self.override_target_lane}', (10, 20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
         if show:
             cv2.imshow('marked_lane_point', img)
-            cv2.setMouseCallback('marked_lane_point', click_and_measure, img.copy())
 
     ### ===== 원본 이미지에 BEV 변환 영역을 폴리라인으로 표시하여 시각화한다 =====
     def show_roi_region(self, img, src, show=False):
