@@ -50,7 +50,7 @@ class CenterlaneTracer(Node):
 
         # =======================================================
         # True로 설정 시 디버그 창 활성화, False로 설정 시 Headless 모드
-        self.debug = False
+        self.debug = True
         # =======================================================
 
         self.HEIGHT_THRESHOLD = 220
@@ -108,7 +108,6 @@ class CenterlaneTracer(Node):
             self.get_logger().info("Debug mode OFF. Running in headless mode.")
 
         self.get_logger().info('CenterlaneTracer has been started.')
-        self.get_logger().info('Waiting for service call on /start_track_driving to begin tracing...')
 
     def _initialize_parameters(self):
         """
@@ -139,7 +138,7 @@ class CenterlaneTracer(Node):
 
             # --- 커브/직선 판단 파라미터 ---
             'curve_thresh': 98,
-            'straight_thresh_frame': 5,
+            'straight_thresh_frame': 10,
         }
     
     def _update_params_from_trackbars(self):
@@ -224,13 +223,13 @@ class CenterlaneTracer(Node):
             curve_msg.state = self.lane_state 
             self.curve_publisher.publish(curve_msg)
         else:
-            # 'center_line'이 탐지되지 않았을 때 빈 토픽을 발행하여 후속 노드의 동작을 보장
-            self._update_lane_state("Straight") # 차선이 없으면 직진 상태로 간주
+            # 'center_line'이 탐지되지 않았거나 곡선을 그리지 못한 경우, 이전 프레임의 상태를 유지합니다.
+            # self.lane_state를 업데이트하지 않으므로 이전 상태가 유지됩니다.
             
             curve_msg = Curve()
             curve_msg.header = image_msg.header # 타임스탬프 동기화를 위해 헤더는 필수!
             curve_msg.points = [] # points 리스트를 비워서 보냄
-            curve_msg.state = self.lane_state # 현재 상태(Straight)를 설정
+            curve_msg.state = self.lane_state # 이전 상태(self.lane_state)를 그대로 발행
             self.curve_publisher.publish(curve_msg)
         # ======================= [수정된 부분 끝] ===========================
         
@@ -328,19 +327,26 @@ class CenterlaneTracer(Node):
 
             found_hough_points = False
             if lines is not None:
-                longest_line, max_len_sq = None, 0
+                # ======================= [수정된 부분 시작] =========================
+                # 가장 긴 직선 대신, 가장 오른쪽에 있는 직선을 대표선으로 선택
+                rightmost_line, max_mid_x = None, -1
                 for line in lines:
                     lx1, ly1, lx2, ly2 = line[0]
-                    current_len_sq = (lx2 - lx1)**2 + (ly2 - ly1)**2
-                    if current_len_sq > max_len_sq:
-                        max_len_sq = current_len_sq
-                        longest_line = (lx1 + x1, ly1 + y1, lx2 + x1, ly2 + y1)
-                if longest_line:
-                    intersections = self._get_line_bbox_intersections(longest_line, (x1, y1, x2, y2))
+                    # 직선의 x축 중심점 계산
+                    mid_x = (lx1 + lx2) / 2
+                    if mid_x > max_mid_x:
+                        max_mid_x = mid_x
+                        # BBox 내 상대 좌표를 이미지 전체 좌표로 변환하여 저장
+                        rightmost_line = (lx1 + x1, ly1 + y1, lx2 + x1, ly2 + y1)
+                
+                if rightmost_line:
+                    intersections = self._get_line_bbox_intersections(rightmost_line, (x1, y1, x2, y2))
                     if len(intersections) == 2:
                         all_rep_points.extend(intersections)
                         lines_to_draw.append(intersections)
                         found_hough_points = True
+                # ======================= [수정된 부분 끝] ===========================
+                        
             if not found_hough_points:
                 center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
                 all_rep_points.append((center_x, center_y))

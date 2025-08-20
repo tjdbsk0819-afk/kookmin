@@ -107,7 +107,7 @@ class TargetLanePlanner(Node):
 
         is_curve = curve_msg and curve_msg.state.lower() == 'curve'
 
-        if is_curve and num_detected_vehicles >= 1 and self.driving_state != "OVERTAKING":
+        if is_curve and num_detected_vehicles >= 1:
             # 1-1. 커브길일 경우, 무조건 Time_Gap 모드로 전환하여 차선 변경 없이 앞차를 추종
             self.driving_state = "Time_Gap"
             if processed_obstacles:

@@ -25,8 +25,6 @@ class CheckerBoard_Detector(Node):
             "path_planning_node",
             "preprocessing_node"
         ]
-        # [삭제] 더 이상 이 노드에서 직접 실행하지 않으므로 nodes_to_run 리스트는 제거합니다.
-        # self.nodes_to_run = [...]
         self.is_shutting_down = False # 종료 시퀀스가 중복 실행되는 것을 방지하기 위한 플래그
         # ------------------------------------
 
