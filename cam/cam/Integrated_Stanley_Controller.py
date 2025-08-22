@@ -81,8 +81,9 @@ class IntegratedStanleyController(Node):
         #                   Obstacle Follower 파라미터
         # ==============================================================
     
-        self.TARGET_TIME_GAP = 10.0
+        self.TARGET_TIME_GAP = 5.0 # 원래 10임
         self.OBSTACLE_DETECTION_THRESHOLD = 5.0
+        self.CURVE_OVERTAKE_THRESHOLD_M = 1.0
         self.KP_SPEED_CONTROL = 0.5
         self.MIN_SPEED = 2.0
         self.ACCEL_STEP = 0.4
@@ -171,7 +172,8 @@ class IntegratedStanleyController(Node):
     # ==============================================================
     def calculate_final_speed(self, target_speed):
             is_in_curve = self.curve_state.lower() == 'curve'
-            condition1 = is_in_curve and self.is_obstacle_detected
+            # condition1 = is_in_curve and self.is_obstacle_detected 
+            condition1 = is_in_curve and self.is_obstacle_detected and self.relative_distance > self.CURVE_OVERTAKE_THRESHOLD_M
             condition2 = self.detected_vehicle_count >= 2
             self.condition_to_follow = condition1 or condition2
 
@@ -184,6 +186,7 @@ class IntegratedStanleyController(Node):
                 adjusted_speed = self.current_speed + speed_adjustment
                 final_speed = np.clip(adjusted_speed, self.MIN_SPEED, target_speed)
                 return final_speed, f"🚧 FOLLOWING (V:{self.detected_vehicle_count})"
+
             else:
                 speed_diff = target_speed - self.current_speed
                 if speed_diff > 0:

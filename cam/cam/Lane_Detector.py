@@ -98,7 +98,7 @@ class Lane_Detector(Node):
         self.max_lane_delta = 50
         self.center_correction_weight = 0.6
         # <<< 1. 조건부 보정을 위한 임계값 추가
-        self.center_agreement_threshold = 100 # 단위: 픽셀, 노란 점과 커브의 오차 임계값. 
+        self.center_agreement_threshold = 80 # 단위: 픽셀, 노란 점과 커브의 오차 임계값. 
         #50이 하한 마지노선 (더 내려가면 커브만 따르는 경향 커짐). 
         # 100이 디폴트. (차선 못 잡는다면 값을 10~20씩 내려봐도 됨.)
         # 값이 내려갈 수록 /center_curve에 맞게 보정이 강해짐. 단점은, 커브에서 노란 점의 진동이 커짐.
@@ -384,6 +384,39 @@ class Lane_Detector(Node):
         if show:
             cv2.imshow('marked_lane_point', img)
 
+    def visualize_results_on_original_frame(self, original_img, roi_poly, curve_msg, lane_center_bev, curve_center_bev, show=False):
+        """
+        요청사항을 반영한 새로운 시각화 함수:
+        1. 원본 이미지에 ROI 영역(초록색)을 표시합니다.
+        2. 원본 이미지에 구독한 중앙선(노란색)을 그립니다.
+        3. BEV 공간에서 계산된 차선 검출 중앙값과 YOLO 중앙값 간의 오차를 좌측 상단에 표시합니다.
+        """
+        if not show:
+            return
+
+        display_img = original_img.copy()
+
+        # 1. ROI 영역 표시
+        if roi_poly is not None:
+            cv2.polylines(display_img, [roi_poly.astype(int)], isClosed=True, color=(0, 255, 0), thickness=2)
+
+        # 2. 구독한 curve(YOLO 중앙선) 표시
+        if curve_msg is not None and curve_msg.points:
+            curve_points = np.array([[[int(p.x), int(p.y)]] for p in curve_msg.points], dtype=np.int32)
+            cv2.polylines(display_img, [curve_points], isClosed=False, color=(255, 255, 0), thickness=2)
+
+        # 3. BEV 공간에서의 오차 계산 및 표시
+        error_text = "Error: N/A"
+        if lane_center_bev is not None and curve_center_bev is not None:
+            # "노란 점"(차선 검출 결과)과 "curve"(YOLO 결과)의 거리 오차
+            error = abs(lane_center_bev - curve_center_bev)
+            error_text = f"Error: {error:.2f} px"
+        
+        cv2.putText(display_img, error_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+        
+        # 최종 결과 창 표시
+        cv2.imshow('Result on Original Frame', display_img)
+
     def show_roi_region(self, img, src, show=False):
         if show:
             cv2.polylines(img, [src.astype(int)], True, (0,255,0), 2, cv2.LINE_AA)
@@ -399,7 +432,7 @@ class Lane_Detector(Node):
         bev, src = self.get_birds_eye_view(canny)
         self.transform_curve_to_bev(curve_msg)
         
-        self.show_roi_region(frame, src, show=False)
+        # self.show_roi_region(frame, src, show=False) # 새로운 함수로 대체됨
         lines = self.detect_lines_hough(bev, show=False)
         positions = self.filter_lines_by_angle(lines, show=False)
         lane_candidates = self.extract_lane_candidates_from_clusters(positions, show=False, base_img=bev)
@@ -410,6 +443,23 @@ class Lane_Detector(Node):
         self.force_correct_lane_with_curve()
         
         self.mark_lane(bev, show=True, curve_points=self.bev_curve_points)
+        
+        # --- [변경] 새로운 시각화 함수 호출 ---
+        # BEV 공간에서 YOLO 중앙선의 x좌표 평균 계산
+        curve_center_bev_x = None
+        if self.bev_curve_points is not None and len(self.bev_curve_points) > 0:
+            curve_center_bev_x = np.mean(self.bev_curve_points[:, 0])
+
+        # 새로운 시각화 함수 호출 (show=True로 설정하여 활성화)
+        self.visualize_results_on_original_frame(
+            original_img=frame,
+            roi_poly=self.roi_src_poly,
+            curve_msg=curve_msg,
+            lane_center_bev=self.lane[1],
+            curve_center_bev=curve_center_bev_x,
+            show=True
+        )
+        # ------------------------------------
 
         state_msg = XycarState()
         if self.override_target_lane == 'go_right':

@@ -146,7 +146,7 @@ class CenterlaneTracer(Node):
             # --- 강건한 상태 판단을 위한 파라미터 ---
             'rmse_thresh': 30,             # 직선으로 피팅했을 때의 RMSE 임계값 (값이 클수록 커브로 판단)
             'history_size': 7,            # 이동 평균을 계산할 프레임 수
-            'confidence_thresh': 7,       # 상태를 변경하기 위해 필요한 연속 프레임 수
+            'confidence_thresh': 10,       # 상태를 변경하기 위해 필요한 연속 프레임 수
         }
     
     def _update_params_from_trackbars(self):
@@ -318,6 +318,8 @@ class CenterlaneTracer(Node):
         if not detections:
             return all_rep_points, lines_to_draw, [debug_gray, debug_canny, debug_hough]
 
+        bottom_most_det = max(detections, key=lambda d: d.ymax) if detections else None
+
         for det in detections:
             x1, y1, x2, y2 = map(int, [det.xmin, det.ymin, det.xmax, det.ymax])
             y1, y2 = max(0, y1), min(h, y2)
@@ -339,29 +341,45 @@ class CenterlaneTracer(Node):
                         cv2.line(hough_roi_vis, (lx1, ly1), (lx2, ly2), (0, 255, 0), 2)
                 debug_hough[y1:y2, x1:x2] = hough_roi_vis
 
+            current_box_points = []
             found_hough_points = False
             if lines is not None:
-                # 가장 긴 직선 대신, 가장 오른쪽에 있는 직선을 대표선으로 선택
                 rightmost_line, max_mid_x = None, -1
                 for line in lines:
                     lx1, ly1, lx2, ly2 = line[0]
-                    # 직선의 x축 중심점 계산
                     mid_x = (lx1 + lx2) / 2
                     if mid_x > max_mid_x:
                         max_mid_x = mid_x
-                        # BBox 내 상대 좌표를 이미지 전체 좌표로 변환하여 저장
                         rightmost_line = (lx1 + x1, ly1 + y1, lx2 + x1, ly2 + y1)
                 
                 if rightmost_line:
                     intersections = self._get_line_bbox_intersections(rightmost_line, (x1, y1, x2, y2))
-                    if len(intersections) == 2:
-                        all_rep_points.extend(intersections)
-                        lines_to_draw.append(intersections)
+                    if len(intersections) >= 2: # 교차점이 2개 이상일 때만 처리
+                        # [변경] 교차점이 2개일 때만 높이 차이를 계산하도록 수정
+                        if len(intersections) == 2:
+                            current_box_points.extend(intersections)
+                        else: # 2개가 아닌 경우 (드물지만), 가장 y가 큰 두 점만 선택
+                            current_box_points.extend(sorted(intersections, key=lambda p: p[1], reverse=True)[:2])
+                        lines_to_draw.append(current_box_points)
                         found_hough_points = True
                         
             if not found_hough_points:
                 center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
-                all_rep_points.append((center_x, center_y))
+                current_box_points.append((center_x, center_y))
+
+            # [변경] 가장 하단 박스에 대한 2가지 특별 처리 로직을 통합
+            if det == bottom_most_det and len(current_box_points) > 1:
+                box_height = y2 - y1
+                point_height_diff = abs(current_box_points[0][1] - current_box_points[1][1])
+
+                # 조건 1: 박스 높이가 50 미만이거나,
+                # 조건 2: 박스 내 후보점 간 높이 차이가 5 이내인 경우
+                if box_height < 50 or point_height_diff <= 5:
+                    # 가장 상단(y값이 가장 작은) 점 하나만 선택
+                    topmost_point = min(current_box_points, key=lambda p: p[1])
+                    current_box_points = [topmost_point]
+            
+            all_rep_points.extend(current_box_points)
         return all_rep_points, lines_to_draw, [debug_gray, debug_canny, debug_hough]
 
     def _sort_representative_points(self, points, params):
@@ -472,8 +490,10 @@ class CenterlaneTracer(Node):
                 cv2.rectangle(output_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
         if params['draw_hough']:
             for line in lines_to_draw:
-                pt1, pt2 = tuple(map(int, line[0])), tuple(map(int, line[1]))
-                cv2.line(output_frame, pt1, pt2, (255, 0, 0), 2)
+                # [수정] 라인을 그릴 때 점이 하나만 있을 경우 에러가 나지 않도록 방어 코드 추가
+                if len(line) >= 2:
+                    pt1, pt2 = tuple(map(int, line[0])), tuple(map(int, line[1]))
+                    cv2.line(output_frame, pt1, pt2, (255, 0, 0), 2)
         for i, point in enumerate(sorted_points):
             x, y = map(int, point)
             if params['draw_points']:
