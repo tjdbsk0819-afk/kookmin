@@ -68,6 +68,7 @@ def generate_launch_description():
         output='screen',
         emulate_tty=True
     )
+    #ros2 service call /start_track_driving std_srvs/srv/Trigger "{}"
 
 
     return LaunchDescription([

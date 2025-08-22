@@ -36,6 +36,7 @@ import numpy as np
 from custom_interfaces.msg import Detections, Curve, Point2D
 import message_filters
 import math
+from collections import deque
 
 from scipy.interpolate import splprep, splev
 
@@ -50,7 +51,7 @@ class CenterlaneTracer(Node):
 
         # =======================================================
         # True로 설정 시 디버그 창 활성화, False로 설정 시 Headless 모드
-        self.debug = True
+        self.debug = False
         # =======================================================
 
         self.HEIGHT_THRESHOLD = 220
@@ -59,9 +60,13 @@ class CenterlaneTracer(Node):
 
         self._initialize_parameters()
         
-        # 차선 상태 유지를 위한 변수 초기화
+        # 강건한 상태 판단을 위한 변수 초기화
         self.lane_state = "Straight"
-        self.straight_frames_counter = 0
+        self.state_candidate = "Straight"
+        self.state_confidence_counter = 0
+        
+        # 이동 평균 필터를 위한 deque 초기화
+        self.rmse_history = deque(maxlen=self.params['history_size'])
 
         self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw')
         self.yolo_subscription = message_filters.Subscriber(self, Detections, '/yolo_detections')
@@ -100,8 +105,10 @@ class CenterlaneTracer(Node):
             cv2.createTrackbar('Draw Hough', self.main_window_name, int(self.params['draw_hough']), 1, nothing)
             cv2.createTrackbar('Draw Curve', self.main_window_name, int(self.params['draw_curve']), 1, nothing)
             
-            cv2.createTrackbar('Curve Thresh', self.main_window_name, self.params['curve_thresh'], 100, nothing)
-            cv2.createTrackbar('Straight Frame Thresh', self.main_window_name, self.params['straight_thresh_frame'], 20, nothing)
+            # 새로운 파라미터를 위한 트랙바 추가
+            cv2.createTrackbar('RMSE Thresh', self.main_window_name, self.params['rmse_thresh'], 30, nothing)
+            cv2.createTrackbar('History Size', self.main_window_name, self.params['history_size'], 20, nothing)
+            cv2.createTrackbar('Confidence Thresh', self.main_window_name, self.params['confidence_thresh'], 20, nothing)
 
             self.get_logger().info("Debug mode ON. Trackbars are enabled.")
         else:
@@ -136,9 +143,10 @@ class CenterlaneTracer(Node):
             'draw_hough': True,
             'draw_curve': True,
 
-            # --- 커브/직선 판단 파라미터 ---
-            'curve_thresh': 98,
-            'straight_thresh_frame': 10,
+            # --- 강건한 상태 판단을 위한 파라미터 ---
+            'rmse_thresh': 30,             # 직선으로 피팅했을 때의 RMSE 임계값 (값이 클수록 커브로 판단)
+            'history_size': 7,            # 이동 평균을 계산할 프레임 수
+            'confidence_thresh': 7,       # 상태를 변경하기 위해 필요한 연속 프레임 수
         }
     
     def _update_params_from_trackbars(self):
@@ -158,8 +166,14 @@ class CenterlaneTracer(Node):
         self.params['draw_numbers'] = cv2.getTrackbarPos('Draw Numbers', self.main_window_name) == 1
         self.params['draw_hough'] = cv2.getTrackbarPos('Draw Hough', self.main_window_name) == 1
         self.params['draw_curve'] = cv2.getTrackbarPos('Draw Curve', self.main_window_name) == 1
-        self.params['curve_thresh'] = cv2.getTrackbarPos('Curve Thresh', self.main_window_name)
-        self.params['straight_thresh_frame'] = cv2.getTrackbarPos('Straight Frame Thresh', self.main_window_name)
+        
+        # 새로운 파라미터 트랙바 값 읽기
+        self.params['rmse_thresh'] = cv2.getTrackbarPos('RMSE Thresh', self.main_window_name)
+        new_history_size = cv2.getTrackbarPos('History Size', self.main_window_name)
+        if new_history_size > 0 and self.rmse_history.maxlen != new_history_size:
+            self.rmse_history = deque(self.rmse_history, maxlen=new_history_size)
+        self.params['history_size'] = new_history_size
+        self.params['confidence_thresh'] = cv2.getTrackbarPos('Confidence Thresh', self.main_window_name)
 
 
     def mouse_event_callback(self, event, x, y, flags, param):
@@ -209,37 +223,30 @@ class CenterlaneTracer(Node):
             frame_width=w
         )
 
-        ratio = 1.0 # ratio 변수 초기화
-        
-        # ======================= [수정된 부분 시작] =========================
+        # 새로운 상태 판단 로직 호출
+        smoothed_rmse = 0.0
         if curve_points_to_draw:
-            current_threshold = self.params['curve_thresh'] / 100.0
-            current_frame_decision, ratio = self._get_current_frame_decision(curve_points_to_draw, current_threshold)
-            self._update_lane_state(current_frame_decision)
+            current_rmse = self._calculate_rmse_from_line(curve_points_to_draw)
             
-            curve_msg = Curve()
-            curve_msg.header = image_msg.header
-            curve_msg.points = [Point2D(x=float(p[0]), y=float(p[1])) for p in curve_points_to_draw]
-            curve_msg.state = self.lane_state 
-            self.curve_publisher.publish(curve_msg)
-        else:
-            # 'center_line'이 탐지되지 않았거나 곡선을 그리지 못한 경우, 이전 프레임의 상태를 유지합니다.
-            # self.lane_state를 업데이트하지 않으므로 이전 상태가 유지됩니다.
+            # 이동 평균 필터 적용
+            self.rmse_history.append(current_rmse)
+            smoothed_rmse = sum(self.rmse_history) / len(self.rmse_history)
             
-            curve_msg = Curve()
-            curve_msg.header = image_msg.header # 타임스탬프 동기화를 위해 헤더는 필수!
-            curve_msg.points = [] # points 리스트를 비워서 보냄
-            curve_msg.state = self.lane_state # 이전 상태(self.lane_state)를 그대로 발행
-            self.curve_publisher.publish(curve_msg)
-        # ======================= [수정된 부분 끝] ===========================
+            # 현재 프레임의 후보 상태 결정
+            current_decision = "Curve" if smoothed_rmse > self.params['rmse_thresh'] else "Straight"
+            
+            self._update_lane_state_robust(current_decision)
+
+        # 상태와 관계없이 항상 커브 메시지 발행 (상태 정보 포함)
+        curve_msg = Curve()
+        curve_msg.header = image_msg.header
+        curve_msg.points = [Point2D(x=float(p[0]), y=float(p[1])) for p in curve_points_to_draw] if curve_points_to_draw else []
+        curve_msg.state = self.lane_state # 최종 확정된 상태를 발행
+        self.curve_publisher.publish(curve_msg)
         
         # --- 시각화 로직 (Debug 모드일 때만 실행) ---
         if self.debug:
-            final_decision_text = f"State: {self.lane_state}"
-            if curve_points_to_draw:
-                current_threshold = self.params['curve_thresh'] / 100.0
-                final_decision_text = f"State: {self.lane_state} (Ratio: {ratio:.2f} / Thresh: {current_threshold:.2f})"
-            
+            decision_text = f"State: {self.lane_state} (Smoothed RMSE: {smoothed_rmse:.2f})"
             self.visualize_results(
                 frame, 
                 filtered_detections, 
@@ -247,49 +254,56 @@ class CenterlaneTracer(Node):
                 curve_points_to_draw, 
                 lines_to_draw, 
                 self.params,
-                final_decision_text
+                decision_text
             )
             for name, img in zip(self.debug_window_names, debug_images):
                 if img is not None:
                     cv2.imshow(name, img)
     
-    def _get_current_frame_decision(self, curve_pts, threshold):
+    def _calculate_rmse_from_line(self, points):
         """
-        '현재 프레임'의 점들만을 기반으로 직선인지 커브인지 판단합니다. (영문 반환)
+        주어진 점들에 대해 최적의 직선을 피팅하고,
+        실제 점들과 이 직선 사이의 RMSE(평균 제곱근 오차)를 계산합니다.
         """
-        if len(curve_pts) < 2:
-            return "Straight", 1.0
+        if len(points) < 2:
+            return 0.0
 
-        start_point = curve_pts[0]
-        end_point = curve_pts[-1]
-        end_to_end_distance = math.dist(start_point, end_point)
-        path_length = sum(math.dist(curve_pts[i], curve_pts[i-1]) for i in range(1, len(curve_pts)))
+        points_np = np.array(points)
+        x_coords = points_np[:, 0]
+        y_coords = points_np[:, 1]
 
-        if path_length == 0:
-            return "Straight", 1.0
-
-        curvature_ratio = end_to_end_distance / path_length
-
-        decision = "Curve" if curvature_ratio < threshold else "Straight"
-        return decision, curvature_ratio
-
-    def _update_lane_state(self, current_frame_decision):
-        """
-        Hysteresis 로직을 적용하여 최종 차선 상태를 업데이트합니다.
-        """
-        if self.lane_state == "Straight":
-            if current_frame_decision == "Curve":
-                self.lane_state = "Curve"
-                self.straight_frames_counter = 0
+        # y = mx + c 형태의 직선으로 피팅 (x, y를 바꿔서 x=my+c 형태로 피팅하여 수직선에 대한 문제 방지)
+        coeffs = np.polyfit(y_coords, x_coords, 1)
+        m, c = coeffs
         
-        elif self.lane_state == "Curve":
-            if current_frame_decision == "Straight":
-                self.straight_frames_counter += 1
-                if self.straight_frames_counter >= self.params['straight_thresh_frame']:
-                    self.lane_state = "Straight"
-            else: 
-                self.straight_frames_counter = 0
+        # 각 점의 y좌표에 대해 예측된 x좌표 계산
+        x_predicted = m * y_coords + c
+        
+        # 실제 x좌표와 예측된 x좌표 간의 오차(잔차) 계산
+        errors = x_coords - x_predicted
+        
+        # RMSE 계산
+        rmse = np.sqrt(np.mean(errors**2))
+        return rmse
 
+    def _update_lane_state_robust(self, current_decision):
+        """
+        신뢰도 카운터를 사용하여 차선 상태를 더 강건하게 업데이트합니다.
+        'confidence_thresh' 프레임 동안 상태 후보가 유지되어야 최종 상태가 변경됩니다.
+        """
+        if current_decision == self.state_candidate:
+            # 현재 프레임의 판단이 이전 후보와 동일하면 신뢰도 카운터 증가
+            self.state_confidence_counter += 1
+        else:
+            # 판단이 바뀌었으면, 후보를 새로 설정하고 카운터 리셋
+            self.state_candidate = current_decision
+            self.state_confidence_counter = 1
+
+        # 신뢰도 카운터가 임계값을 넘었고, 최종 상태가 현재 후보와 다를 경우에만 상태 변경
+        if self.state_confidence_counter >= self.params['confidence_thresh']:
+            if self.lane_state != self.state_candidate:
+                self.get_logger().info(f"Lane state changed from '{self.lane_state}' to '{self.state_candidate}'")
+                self.lane_state = self.state_candidate
 
     def _extract_representative_points(self, frame, detections, params):
         all_rep_points = []
@@ -327,7 +341,6 @@ class CenterlaneTracer(Node):
 
             found_hough_points = False
             if lines is not None:
-                # ======================= [수정된 부분 시작] =========================
                 # 가장 긴 직선 대신, 가장 오른쪽에 있는 직선을 대표선으로 선택
                 rightmost_line, max_mid_x = None, -1
                 for line in lines:
@@ -345,7 +358,6 @@ class CenterlaneTracer(Node):
                         all_rep_points.extend(intersections)
                         lines_to_draw.append(intersections)
                         found_hough_points = True
-                # ======================= [수정된 부분 끝] ===========================
                         
             if not found_hough_points:
                 center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2

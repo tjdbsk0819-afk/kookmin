@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding:utf-8 -*-
 import rclpy
 from rclpy.node import Node
 import numpy as np
@@ -27,13 +25,7 @@ class IntegratedStanleyController(Node):
         #                       ROS2 인터페이스
         # ==============================================================
         # 구독자들 (callback_group 인자 추가)
-        self.xycar_state_sub = self.create_subscription(
-            XycarState,
-            '/xycar_state',
-            self.xycar_state_callback,
-            10,
-            callback_group=self.control_callback_group  # 제어 그룹 할당
-        )
+        self.xycar_state_sub = self.create_subscription(XycarState,'/xycar_state',self.xycar_state_callback,10,callback_group=self.control_callback_group)
         self.obstacle_state_sub = self.create_subscription(
             ObstacleState,
             '/obstacle_state',
@@ -72,22 +64,27 @@ class IntegratedStanleyController(Node):
         self.heading_weight = 0.3
         self.deg_to_servo_scale = 5.0 / 3.0
         self.deg_to_servo_offset = 0.0
+
         self.max_delta_angle = 15.0
         self.window = 1
+
         self.steering_threshold = 3.0
+
         self.k_straight = 1.0
         self.k_curve = 1.2
         self.k_obstacle = 1.2
+
         self.speed_straight = 35.0
         self.speed_curve = 20.0
 
         # ==============================================================
         #                   Obstacle Follower 파라미터
         # ==============================================================
+    
         self.TARGET_TIME_GAP = 10.0
-        self.OBSTACLE_DETECTION_THRESHOLD = 2.0
+        self.OBSTACLE_DETECTION_THRESHOLD = 5.0
         self.KP_SPEED_CONTROL = 0.5
-        self.MIN_SPEED = 4.0
+        self.MIN_SPEED = 2.0
         self.ACCEL_STEP = 0.4
         self.DECEL_STEP = 1.0
 
@@ -98,12 +95,14 @@ class IntegratedStanleyController(Node):
         self.angle_buffer = deque(maxlen=self.window)
         self.current_k = self.k_straight
         self.current_mode = 'center'
+
         self.relative_distance = self.OBSTACLE_DETECTION_THRESHOLD + 1.0
         self.is_obstacle_detected = False
         self.current_speed = self.MIN_SPEED
         self.obstacle_position = 'none'
         self.detected_vehicle_count = 0
         self.curve_state = "Straight"
+        self.condition_to_follow = False
         self.min_allowed_speed = min(self.speed_curve, self.speed_straight)
         self.max_allowed_speed = max(self.speed_curve, self.speed_straight)
 
@@ -174,9 +173,9 @@ class IntegratedStanleyController(Node):
             is_in_curve = self.curve_state.lower() == 'curve'
             condition1 = is_in_curve and self.is_obstacle_detected
             condition2 = self.detected_vehicle_count >= 2
-            condition_to_follow = condition1 or condition2
+            self.condition_to_follow = condition1 or condition2
 
-            if condition_to_follow:
+            if self.condition_to_follow:
                 current_speed_mps = self.current_speed / 20.0 
                 safe_speed_mps = max(current_speed_mps, 0.1)
                 time_gap = self.relative_distance / safe_speed_mps
@@ -234,7 +233,16 @@ class IntegratedStanleyController(Node):
         final_angle = self.clamp_angle(smoothed_angle)
         self.last_steering_deg = final_angle
 
-        target_speed, current_k = self.get_target_speed_and_k(smoothed_angle)
+        target_speed_servo, current_k_servo = self.get_target_speed_and_k(smoothed_angle)
+
+        target_speed_state = self.speed_curve if self.curve_state == 'Curve' else self.speed_straight
+
+        target_speed = min(target_speed_state, target_speed_servo)
+
+        if self.is_obstacle_detected:
+            self.current_k = self.k_obstacle
+        else:
+            self.current_k = self.k_curve if self.curve_state == 'Curve' else self.k_straight
 
         final_speed, speed_status = self.calculate_final_speed(target_speed)
         self.current_speed = final_speed
@@ -246,7 +254,7 @@ class IntegratedStanleyController(Node):
         # ### 변경된 부분 ### : 로깅을 주기적으로 실행
         self.log_counter += 1
         if self.log_counter % self.log_interval == 0:
-            self.log_status(heading_error_rad, cte_term, current_k, final_angle, 
+            self.log_status(heading_error_rad, cte_term, self.current_k, final_angle, 
                            target_speed, final_speed, speed_status, rate_limited)
         
     def log_status(self, heading_error_rad, cte_term, current_k, final_angle, 
@@ -260,10 +268,10 @@ class IntegratedStanleyController(Node):
         else:
             lane_target_str = "⚪ UNKNOWN"
 
-        if self.is_obstacle_detected:
-            driving_mode = "🚧 OBSTACLE MODE"
+        if self.condition_to_follow:
+            driving_mode = "🚧 Time gap MODE"
         else:
-            driving_mode = "🔄 CURVE MODE" if abs(final_angle) > self.steering_threshold else "➡️ STRAIGHT MODE"
+            driving_mode = "🔄 일반 MODE - CURVE" if self.curve_state == 'Curve' else "➡️ 일반 MODE - STRAIGHT"
 
         rate_limit_marker = "⛔" if rate_limited else ""
         obstacle_status = f"🚗 Dist: {self.relative_distance:.2f}m" if self.is_obstacle_detected else "🟢 Clear"

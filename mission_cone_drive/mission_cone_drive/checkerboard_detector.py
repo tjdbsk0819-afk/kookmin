@@ -4,6 +4,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_srvs.srv import Trigger
+from std_msgs.msg import String
 from cv_bridge import CvBridge
 import cv2
 import subprocess
@@ -32,7 +33,7 @@ class CheckerBoard_Detector(Node):
         self.declare_parameter('enable_visualization', True)
         self.declare_parameter('show_class_name', False)
         self.declare_parameter('show_confidence', False)
-        self.declare_parameter('bbox_area_threshold', 8000)
+        self.declare_parameter('bbox_area_threshold', 4000)
 
         # 파라미터 값 읽어오기
         self.enable_visualization = self.get_parameter('enable_visualization').get_parameter_value().bool_value
@@ -49,6 +50,14 @@ class CheckerBoard_Detector(Node):
             slop=0.1
         )
         self.time_synchronizer.registerCallback(self.synchronized_callback)
+
+        self.sign_subscription = self.create_subscription(
+            String,
+            'sign_color',
+            self.sign_callback,
+            10
+        )
+        self.is_started = False
         
         # --- 서비스 클라이언트 설정 ---
         self.client = self.create_client(Trigger, 'start_track_driving')
@@ -68,6 +77,14 @@ class CheckerBoard_Detector(Node):
             cv2.namedWindow(self.result_win_name)
         self.latest_detections = []
         self.lock = threading.Lock()
+    
+    def sign_callback(self, msg):
+        if self.is_started == True: # 한번 true로 바뀌면 pass
+            pass
+
+        if msg.data == 'green':
+            self.is_started = True # 초기상태(false)인 경우, 'green'을 받으면 true로 변경
+
     
     def send_request(self):
         """
@@ -121,6 +138,9 @@ class CheckerBoard_Detector(Node):
     def detections_callback(self, msg):
         if self.is_shutting_down:
             return
+        
+        if self.is_started == False: #sign_detector가 'green'을 보내기 전까지는 전환 동작 수행 X (노이즈로 인한 전환 방지)
+            return
 
         trigger_shutdown = False
         temp_detections = []
@@ -156,6 +176,9 @@ class CheckerBoard_Detector(Node):
 
     def image_callback(self, msg):
         if self.is_shutting_down or not self.enable_visualization:
+            return
+        
+        if self.is_started == False: #sign_detector가 'green'을 보내기 전까지는 전환 동작 수행 X (노이즈로 인한 전환 방지)
             return
 
         frame = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
