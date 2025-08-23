@@ -52,7 +52,7 @@ class TargetLanePlanner(Node):
         self.pass_complete_timer = None     # 장애물을 지나친 후 안전거리 확보를 위한 타이머
         self.PASS_TIMER_DURATION_S = 0.1  # 안전거리 확보 시간 (0.1초)
 
-        self.E_STOP_DISTANCE_M = 1.0  # 급정지를 발동할 거리 (m)
+        self.E_STOP_DISTANCE_M = 0.5  # 급정지를 발동할 거리 (m)
         self.E_STOP_X_MIN = 50     # 급정지를 감지할 전방 카메라 x좌표 (최소)
         self.E_STOP_X_MAX = 600   # 급정지를 감지할 전방 카메라 x좌표 (최대)
 

@@ -10,7 +10,7 @@ from std_msgs.msg import ColorRGBA
 import math
 import numpy as np 
 
-LEFT_FIRST_CONE_RANGE = 0.6
+LEFT_FIRST_CONE_RANGE = 0.8
 RIGHT_FIRST_CONE_RANGE = 0.8
 
 LEFT_SECTOR_START, LEFT_SECTOR_END = 30.0, 100.0

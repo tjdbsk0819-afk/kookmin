@@ -101,7 +101,7 @@ class PathPlanningNode(Node):
     
     def form_cone_groups(self, cluster_centers):
         # --- 부채꼴 영역 및 거리 상수 정의 ---
-        LEFT_FIRST_CONE_RANGE = 0.6  
+        LEFT_FIRST_CONE_RANGE = 0.8  
         RIGHT_FIRST_CONE_RANGE = 0.8
         LEFT_SECTOR_START, LEFT_SECTOR_END = 30.0, 100.0    # 좌측 부채꼴 각도 (degree)
         RIGHT_SECTOR_START, RIGHT_SECTOR_END = 260.0, 330.0  # 우측 부채꼴 각도 (degree)
