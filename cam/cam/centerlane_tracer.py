@@ -13,7 +13,7 @@
 #       1. 이미지 토픽('/image_raw')과 YOLO 탐지 토픽('/yolo_detections')을 동기화하여 수신.
 #       2. Debug 모드가 켜져 있으면, UI 트랙바에서 실시간으로 파라미터를 읽어와 업데이트.
 #          - 꺼져 있으면, 코드에 설정된 기본 파라미터 값을 사용.
-#       3. YOLO 탐지 결과 중 'center_line' 클래스만 필터링.
+#       3. YOLO 탐지 결과 중 'center_line' 클래스이면서 신뢰도가 0.4 이상인 것만 필터링.
 #       4. 각 BBox 내에서 이미지 처리(Adaptive Threshold -> Canny Edge -> Hough Line Transform)를
 #          수행하여 가장 긴 선분을 찾고, 선분과 BBox의 교차점을 '대표점'으로 추출.
 #          - 선분 탐지 실패 시 BBox의 중앙점을 fallback으로 사용.
@@ -57,15 +57,15 @@ class CenterlaneTracer(Node):
         self.HEIGHT_THRESHOLD = 220
         self.bridge = CvBridge()
         self.current_frame = None
+        
+        self.frame_idx = 0
 
         self._initialize_parameters()
         
-        # 강건한 상태 판단을 위한 변수 초기화
         self.lane_state = "Straight"
         self.state_candidate = "Straight"
         self.state_confidence_counter = 0
         
-        # 이동 평균 필터를 위한 deque 초기화
         self.rmse_history = deque(maxlen=self.params['history_size'])
 
         self.image_subscription = message_filters.Subscriber(self, Image, '/image_raw')
@@ -96,7 +96,8 @@ class CenterlaneTracer(Node):
             cv2.createTrackbar('Hough Threshold', self.main_window_name, self.params['hough_threshold'], 100, nothing)
             cv2.createTrackbar('Hough MinLineLength', self.main_window_name, self.params['hough_min_len'], 100, nothing)
             cv2.createTrackbar('Hough MaxLineGap', self.main_window_name, self.params['hough_max_gap'], 100, nothing)
-            cv2.createTrackbar('Similarity Thresh', self.main_window_name, self.params['similarity_thresh'], 50, nothing)
+            cv2.createTrackbar('Similarity Thresh', self.main_window_name, self.params['similarity_thresh'], 100, nothing)
+            cv2.createTrackbar('Slope Thresh x100', self.main_window_name, self.params['slope_thresh_x100'], 1000, nothing)
             cv2.createTrackbar('Fit Mode', self.main_window_name, self.params['fit_mode_val'], 1, nothing)
             
             cv2.createTrackbar('Draw BBox', self.main_window_name, int(self.params['draw_bbox']), 1, nothing)
@@ -105,10 +106,20 @@ class CenterlaneTracer(Node):
             cv2.createTrackbar('Draw Hough', self.main_window_name, int(self.params['draw_hough']), 1, nothing)
             cv2.createTrackbar('Draw Curve', self.main_window_name, int(self.params['draw_curve']), 1, nothing)
             
-            # 새로운 파라미터를 위한 트랙바 추가
             cv2.createTrackbar('RMSE Thresh', self.main_window_name, self.params['rmse_thresh'], 30, nothing)
             cv2.createTrackbar('History Size', self.main_window_name, self.params['history_size'], 20, nothing)
             cv2.createTrackbar('Confidence Thresh', self.main_window_name, self.params['confidence_thresh'], 20, nothing)
+
+            cv2.createTrackbar('Bottom Box H', self.main_window_name, self.params['bottom_box_height_thresh'], 100, nothing)
+            cv2.createTrackbar('Bottom Pt H Diff', self.main_window_name, self.params['bottom_point_height_diff_thresh'], 20, nothing)
+
+            cv2.createTrackbar('Angle Sim', self.main_window_name, int(self.params['angle_similarity_thresh']), 90, nothing)
+            cv2.createTrackbar('Length Sim', self.main_window_name, int(self.params['length_similarity_thresh'] * 100), 100, nothing)
+
+            cv2.createTrackbar('Min BBox W', self.main_window_name, self.params['min_bbox_width'], 50, nothing)
+            cv2.createTrackbar('Min BBox H', self.main_window_name, self.params['min_bbox_height'], 50, nothing)
+            
+            cv2.createTrackbar('X Dist Thresh', self.main_window_name, self.params['x_dist_thresh'], 640, nothing)
 
             self.get_logger().info("Debug mode ON. Trackbars are enabled.")
         else:
@@ -117,12 +128,7 @@ class CenterlaneTracer(Node):
         self.get_logger().info('CenterlaneTracer has been started.')
 
     def _initialize_parameters(self):
-        """
-        모든 파라미터의 기본값을 중앙에서 관리합니다.
-        Headless 모드에서는 이 값들이 고정값으로 사용됩니다.
-        """
         self.params = {
-            # --- 이미지 처리 파라미터 ---
             'adapt_method_val': 1,
             'block_size_val': 5,
             'c_constant_val': 5,
@@ -131,26 +137,27 @@ class CenterlaneTracer(Node):
             'hough_threshold': 20,
             'hough_min_len': 20,
             'hough_max_gap': 5,
-
-            # --- 대표점 정렬 및 커브 피팅 파라미터 ---
-            'similarity_thresh': 25,
+            'similarity_thresh': 70,
             'fit_mode_val': 1,
-
-            # --- 시각화 옵션 ---
+            'slope_thresh_x100': 13,
             'draw_bbox': True,
             'draw_points': True,
             'draw_numbers': True,
             'draw_hough': True,
             'draw_curve': True,
-
-            # --- 강건한 상태 판단을 위한 파라미터 ---
-            'rmse_thresh': 30,             # 직선으로 피팅했을 때의 RMSE 임계값 (값이 클수록 커브로 판단)
-            'history_size': 7,            # 이동 평균을 계산할 프레임 수
-            'confidence_thresh': 10,       # 상태를 변경하기 위해 필요한 연속 프레임 수
+            'rmse_thresh': 30,
+            'history_size': 7,
+            'confidence_thresh': 10,
+            'bottom_box_height_thresh': 10,
+            'bottom_point_height_diff_thresh': 5,
+            'angle_similarity_thresh': 20.0,
+            'length_similarity_thresh': 0.6,
+            'min_bbox_width': 5,
+            'min_bbox_height': 5,
+            'x_dist_thresh': 300,
         }
     
     def _update_params_from_trackbars(self):
-        """디버그 모드일 때 트랙바에서 파라미터를 읽어와 self.params를 업데이트합니다."""
         self.params['adapt_method_val'] = cv2.getTrackbarPos('Adapt Method', self.main_window_name)
         self.params['block_size_val'] = cv2.getTrackbarPos('Block Size', self.main_window_name)
         self.params['c_constant_val'] = cv2.getTrackbarPos('C Constant', self.main_window_name)
@@ -160,6 +167,7 @@ class CenterlaneTracer(Node):
         self.params['hough_min_len'] = cv2.getTrackbarPos('Hough MinLineLength', self.main_window_name)
         self.params['hough_max_gap'] = cv2.getTrackbarPos('Hough MaxLineGap', self.main_window_name)
         self.params['similarity_thresh'] = cv2.getTrackbarPos('Similarity Thresh', self.main_window_name)
+        self.params['slope_thresh_x100'] = cv2.getTrackbarPos('Slope Thresh x100', self.main_window_name)
         self.params['fit_mode_val'] = cv2.getTrackbarPos('Fit Mode', self.main_window_name)
         self.params['draw_bbox'] = cv2.getTrackbarPos('Draw BBox', self.main_window_name) == 1
         self.params['draw_points'] = cv2.getTrackbarPos('Draw Points', self.main_window_name) == 1
@@ -167,13 +175,23 @@ class CenterlaneTracer(Node):
         self.params['draw_hough'] = cv2.getTrackbarPos('Draw Hough', self.main_window_name) == 1
         self.params['draw_curve'] = cv2.getTrackbarPos('Draw Curve', self.main_window_name) == 1
         
-        # 새로운 파라미터 트랙바 값 읽기
         self.params['rmse_thresh'] = cv2.getTrackbarPos('RMSE Thresh', self.main_window_name)
         new_history_size = cv2.getTrackbarPos('History Size', self.main_window_name)
         if new_history_size > 0 and self.rmse_history.maxlen != new_history_size:
             self.rmse_history = deque(self.rmse_history, maxlen=new_history_size)
         self.params['history_size'] = new_history_size
         self.params['confidence_thresh'] = cv2.getTrackbarPos('Confidence Thresh', self.main_window_name)
+        
+        self.params['bottom_box_height_thresh'] = cv2.getTrackbarPos('Bottom Box H', self.main_window_name)
+        self.params['bottom_point_height_diff_thresh'] = cv2.getTrackbarPos('Bottom Pt H Diff', self.main_window_name)
+
+        self.params['angle_similarity_thresh'] = float(cv2.getTrackbarPos('Angle Sim', self.main_window_name))
+        self.params['length_similarity_thresh'] = cv2.getTrackbarPos('Length Sim', self.main_window_name) / 100.0
+        
+        self.params['min_bbox_width'] = cv2.getTrackbarPos('Min BBox W', self.main_window_name)
+        self.params['min_bbox_height'] = cv2.getTrackbarPos('Min BBox H', self.main_window_name)
+        
+        self.params['x_dist_thresh'] = cv2.getTrackbarPos('X Dist Thresh', self.main_window_name)
 
 
     def mouse_event_callback(self, event, x, y, flags, param):
@@ -183,6 +201,8 @@ class CenterlaneTracer(Node):
             self.get_logger().info(f'Click at ({x}, {y}) | BGR: {bgr_pixel} -> HSV: {hsv_pixel}')
 
     def synchronized_callback(self, image_msg, yolo_msg):
+        self.frame_idx += 1
+        
         if self.debug:
             self._update_params_from_trackbars()
         
@@ -206,16 +226,54 @@ class CenterlaneTracer(Node):
             'hough_min_len': self.params['hough_min_len'],
             'hough_max_gap': self.params['hough_max_gap'],
             'similarity_thresh': self.params['similarity_thresh'],
+            'slope_threshold': self.params['slope_thresh_x100'] / 100.0,
+            'bottom_box_height_thresh': self.params['bottom_box_height_thresh'],
+            'bottom_point_height_diff_thresh': self.params['bottom_point_height_diff_thresh'],
+            'angle_similarity_thresh': self.params['angle_similarity_thresh'],
+            'length_similarity_thresh': self.params['length_similarity_thresh'],
+            'min_bbox_width': self.params['min_bbox_width'],
+            'min_bbox_height': self.params['min_bbox_height'],
+            'x_dist_thresh': self.params['x_dist_thresh'],
         }
         fit_mode = 'linear' if self.params['fit_mode_val'] == 1 else 'spline'
 
-        # --- 핵심 로직 (모드와 관계없이 항상 실행) ---
-        filtered_detections = [
-            det for det in yolo_msg.detections
-            if det.class_name == 'center_line' and det.ymax > self.HEIGHT_THRESHOLD
+        vehicle_detections = [det for det in yolo_msg.detections if det.class_name == 'obstacle_vehicle']
+        
+        all_center_lane_detections = [
+            det for det in yolo_msg.detections if det.class_name == 'center_line'
         ]
+
+        center_lane_detections = [
+            det for det in all_center_lane_detections if det.confidence >= 0.4
+        ]
+        
+        lanes_to_keep = []
+        
+        for lane_det in center_lane_detections:
+            should_filter = False
+            for vehicle_det in vehicle_detections:
+                v_xmin, v_ymin, v_xmax, v_ymax = vehicle_det.xmin, vehicle_det.ymin, vehicle_det.xmax, vehicle_det.ymax
+                l_xmin, l_ymin, l_xmax, l_ymax = lane_det.xmin, lane_det.ymin, lane_det.xmax, lane_det.ymax
+                filter_zone_y_max = v_ymin + (v_ymax - v_ymin) * 0.7
+                is_x_overlap = (l_xmin < v_xmax) and (l_xmax > v_xmin)
+                is_lane_bottom_in_zone = (l_ymax > v_ymin) and (l_ymax < filter_zone_y_max)
+                
+                if is_x_overlap and is_lane_bottom_in_zone:
+                    should_filter = True
+                    break
+            
+            if not should_filter:
+                lanes_to_keep.append(lane_det)
+
+        filtered_detections = [
+            det for det in lanes_to_keep
+            if det.ymax > self.HEIGHT_THRESHOLD
+        ]
+        
         all_rep_points_unsorted, lines_to_draw, debug_images = self._extract_representative_points(frame, filtered_detections, proc_params)
-        sorted_rep_points = self._sort_representative_points(all_rep_points_unsorted, proc_params)
+        
+        sorted_rep_points = self._sort_representative_points(all_rep_points_unsorted, proc_params, self.frame_idx, frame_width=w)
+
         curve_points_to_draw = self.fit_curve_to_points(
             sorted_rep_points,
             mode=fit_mode, 
@@ -223,83 +281,63 @@ class CenterlaneTracer(Node):
             frame_width=w
         )
 
-        # 새로운 상태 판단 로직 호출
         smoothed_rmse = 0.0
-        if curve_points_to_draw:
+        if len(sorted_rep_points) > 2 and curve_points_to_draw:
             current_rmse = self._calculate_rmse_from_line(curve_points_to_draw)
-            
-            # 이동 평균 필터 적용
             self.rmse_history.append(current_rmse)
             smoothed_rmse = sum(self.rmse_history) / len(self.rmse_history)
-            
-            # 현재 프레임의 후보 상태 결정
             current_decision = "Curve" if smoothed_rmse > self.params['rmse_thresh'] else "Straight"
-            
             self._update_lane_state_robust(current_decision)
 
-        # 상태와 관계없이 항상 커브 메시지 발행 (상태 정보 포함)
         curve_msg = Curve()
         curve_msg.header = image_msg.header
         curve_msg.points = [Point2D(x=float(p[0]), y=float(p[1])) for p in curve_points_to_draw] if curve_points_to_draw else []
-        curve_msg.state = self.lane_state # 최종 확정된 상태를 발행
+        curve_msg.state = self.lane_state
         self.curve_publisher.publish(curve_msg)
         
-        # --- 시각화 로직 (Debug 모드일 때만 실행) ---
         if self.debug:
             decision_text = f"State: {self.lane_state} (Smoothed RMSE: {smoothed_rmse:.2f})"
             self.visualize_results(
                 frame, 
-                filtered_detections, 
+                filtered_detections,
+                vehicle_detections, 
                 sorted_rep_points, 
                 curve_points_to_draw, 
                 lines_to_draw, 
                 self.params,
-                decision_text
+                decision_text,
+                self.frame_idx,
+                all_center_lane_detections 
             )
             for name, img in zip(self.debug_window_names, debug_images):
                 if img is not None:
                     cv2.imshow(name, img)
     
     def _calculate_rmse_from_line(self, points):
-        """
-        주어진 점들에 대해 최적의 직선을 피팅하고,
-        실제 점들과 이 직선 사이의 RMSE(평균 제곱근 오차)를 계산합니다.
-        """
         if len(points) < 2:
             return 0.0
 
         points_np = np.array(points)
         x_coords = points_np[:, 0]
         y_coords = points_np[:, 1]
-
-        # y = mx + c 형태의 직선으로 피팅 (x, y를 바꿔서 x=my+c 형태로 피팅하여 수직선에 대한 문제 방지)
+        
         coeffs = np.polyfit(y_coords, x_coords, 1)
         m, c = coeffs
         
-        # 각 점의 y좌표에 대해 예측된 x좌표 계산
         x_predicted = m * y_coords + c
         
-        # 실제 x좌표와 예측된 x좌표 간의 오차(잔차) 계산
         errors = x_coords - x_predicted
         
-        # RMSE 계산
         rmse = np.sqrt(np.mean(errors**2))
         return rmse
 
     def _update_lane_state_robust(self, current_decision):
-        """
-        신뢰도 카운터를 사용하여 차선 상태를 더 강건하게 업데이트합니다.
-        'confidence_thresh' 프레임 동안 상태 후보가 유지되어야 최종 상태가 변경됩니다.
-        """
         if current_decision == self.state_candidate:
-            # 현재 프레임의 판단이 이전 후보와 동일하면 신뢰도 카운터 증가
             self.state_confidence_counter += 1
         else:
-            # 판단이 바뀌었으면, 후보를 새로 설정하고 카운터 리셋
             self.state_candidate = current_decision
             self.state_confidence_counter = 1
 
-        # 신뢰도 카운터가 임계값을 넘었고, 최종 상태가 현재 후보와 다를 경우에만 상태 변경
         if self.state_confidence_counter >= self.params['confidence_thresh']:
             if self.lane_state != self.state_candidate:
                 self.get_logger().info(f"Lane state changed from '{self.lane_state}' to '{self.state_candidate}'")
@@ -311,9 +349,7 @@ class CenterlaneTracer(Node):
         h, w, _ = frame.shape
         debug_gray, debug_canny, debug_hough = None, None, None
         if self.debug:
-            debug_gray = np.zeros((h, w), dtype=np.uint8)
-            debug_canny = np.zeros((h, w), dtype=np.uint8)
-            debug_hough = np.zeros((h, w, 3), dtype=np.uint8)
+            debug_gray, debug_canny, debug_hough = np.zeros((h, w), dtype=np.uint8), np.zeros((h, w), dtype=np.uint8), np.zeros((h, w, 3), dtype=np.uint8)
 
         if not detections:
             return all_rep_points, lines_to_draw, [debug_gray, debug_canny, debug_hough]
@@ -322,9 +358,15 @@ class CenterlaneTracer(Node):
 
         for det in detections:
             x1, y1, x2, y2 = map(int, [det.xmin, det.ymin, det.xmax, det.ymax])
-            y1, y2 = max(0, y1), min(h, y2)
-            x1, x2 = max(0, x1), min(w, x2)
+            y1, y2, x1, x2 = max(0, y1), min(h, y2), max(0, x1), min(w, x2)
+            
+            box_width = x2 - x1
+            box_height = y2 - y1
+            if box_width < params['min_bbox_width'] or box_height < params['min_bbox_height']:
+                continue
+            
             if y1 >= y2 or x1 >= x2: continue
+            
             roi = frame[y1:y2, x1:x2]
             gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             thresh_roi = cv2.adaptiveThreshold(gray_roi, 255, params['adapt_method'], cv2.THRESH_BINARY, params['block_size'], params['c_constant'])
@@ -332,75 +374,196 @@ class CenterlaneTracer(Node):
             lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=params['hough_threshold'], minLineLength=params['hough_min_len'], maxLineGap=params['hough_max_gap'])
 
             if self.debug:
-                debug_gray[y1:y2, x1:x2] = thresh_roi
-                debug_canny[y1:y2, x1:x2] = edges
+                debug_gray[y1:y2, x1:x2], debug_canny[y1:y2, x1:x2] = thresh_roi, edges
                 hough_roi_vis = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
                 if lines is not None:
-                    for line in lines:
-                        lx1, ly1, lx2, ly2 = line[0]
-                        cv2.line(hough_roi_vis, (lx1, ly1), (lx2, ly2), (0, 255, 0), 2)
+                    for line in lines: cv2.line(hough_roi_vis, (line[0][0], line[0][1]), (line[0][2], line[0][3]), (0, 255, 0), 2)
                 debug_hough[y1:y2, x1:x2] = hough_roi_vis
 
-            current_box_points = []
-            found_hough_points = False
+            current_box_points, found_hough_points = [], False
             if lines is not None:
-                rightmost_line, max_mid_x = None, -1
+                diag_dx, diag_dy = (x2 - x1), (y1 - y2)
+                diag_angle = np.degrees(np.arctan2(diag_dy, diag_dx))
+                diag_angle = diag_angle + 180 if diag_angle < 0 else diag_angle
+                diag_length = np.sqrt(diag_dx**2 + diag_dy**2)
+                
+                valid_lines = []
                 for line in lines:
                     lx1, ly1, lx2, ly2 = line[0]
-                    mid_x = (lx1 + lx2) / 2
-                    if mid_x > max_mid_x:
-                        max_mid_x = mid_x
-                        rightmost_line = (lx1 + x1, ly1 + y1, lx2 + x1, ly2 + y1)
+                    line_dx, line_dy = (lx2 - lx1), (ly2 - ly1)
+                    line_length = np.sqrt(line_dx**2 + line_dy**2)
+                    
+                    if diag_length == 0 or line_length == 0: continue
+                    
+                    line_angle = np.degrees(np.arctan2(-line_dy, line_dx))
+                    line_angle = line_angle + 180 if line_angle < 0 else line_angle
+                    
+                    angle_diff = min(abs(line_angle - diag_angle), 180 - abs(line_angle - diag_angle))
+                    length_ratio = line_length / diag_length
+
+                    if angle_diff < params['angle_similarity_thresh'] and length_ratio > params['length_similarity_thresh']:
+                        valid_lines.append(line)
                 
-                if rightmost_line:
-                    intersections = self._get_line_bbox_intersections(rightmost_line, (x1, y1, x2, y2))
-                    if len(intersections) >= 2: # 교차점이 2개 이상일 때만 처리
-                        # [변경] 교차점이 2개일 때만 높이 차이를 계산하도록 수정
-                        if len(intersections) == 2:
-                            current_box_points.extend(intersections)
-                        else: # 2개가 아닌 경우 (드물지만), 가장 y가 큰 두 점만 선택
+                if valid_lines:
+                    rightmost_line, max_mid_x = None, -1
+                    for line in valid_lines:
+                        lx1, _, lx2, _ = line[0]
+                        mid_x = (lx1 + lx2) / 2
+                        if mid_x > max_mid_x:
+                            max_mid_x = mid_x
+                            rightmost_line = (lx1 + x1, line[0][1] + y1, lx2 + x1, line[0][3] + y1)
+                    
+                    if rightmost_line:
+                        intersections = self._get_line_bbox_intersections(rightmost_line, (x1, y1, x2, y2))
+                        if len(intersections) >= 2:
                             current_box_points.extend(sorted(intersections, key=lambda p: p[1], reverse=True)[:2])
-                        lines_to_draw.append(current_box_points)
-                        found_hough_points = True
+                            lines_to_draw.append(current_box_points)
+                            found_hough_points = True
                         
             if not found_hough_points:
-                center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
-                current_box_points.append((center_x, center_y))
+                current_box_points.append(((x1 + x2) / 2, (y1 + y2) / 2))
 
-            # [변경] 가장 하단 박스에 대한 2가지 특별 처리 로직을 통합
             if det == bottom_most_det and len(current_box_points) > 1:
                 box_height = y2 - y1
                 point_height_diff = abs(current_box_points[0][1] - current_box_points[1][1])
-
-                # 조건 1: 박스 높이가 50 미만이거나,
-                # 조건 2: 박스 내 후보점 간 높이 차이가 5 이내인 경우
-                if box_height < 50 or point_height_diff <= 5:
-                    # 가장 상단(y값이 가장 작은) 점 하나만 선택
+                if box_height < params['bottom_box_height_thresh'] or point_height_diff <= params['bottom_point_height_diff_thresh']:
                     topmost_point = min(current_box_points, key=lambda p: p[1])
                     current_box_points = [topmost_point]
             
             all_rep_points.extend(current_box_points)
         return all_rep_points, lines_to_draw, [debug_gray, debug_canny, debug_hough]
 
-    def _sort_representative_points(self, points, params):
-        if len(points) < 2: return points
+    def _sort_representative_points(self, points, params, frame_idx, frame_width):
+        if len(points) < 2:
+            return points
+
         remaining_points = points.copy()
         start_point = max(remaining_points, key=lambda p: p[1])
         sorted_points = [start_point]
         remaining_points.remove(start_point)
         current_point = start_point
+
+        debug_log = []
+
         while remaining_points:
             distances = [(p, math.dist(current_point, p)) for p in remaining_points]
-            if not distances: break
+            if not distances:
+                break
+
             min_distance = min(d for p, d in distances)
             candidates = [p for p, d in distances if d <= min_distance + params['similarity_thresh']]
-            best_next_point = max(candidates, key=lambda p: p[1])
+
+            if not candidates:
+                break
+
+            # ==================== [수정] 후보점들의 선분 기울기 평균 계산 로직 ====================
+            trend_slope_abs = 0.0
+            if len(candidates) >= 2:
+                # 후보 점들을 x좌표 기준으로 정렬
+                sorted_candidates_x = sorted(candidates, key=lambda p: p[0])
+                segment_slopes = []
+                
+                # 정렬된 점들 사이의 모든 선분 기울기를 계산
+                for i in range(len(sorted_candidates_x) - 1):
+                    p1 = sorted_candidates_x[i]
+                    p2 = sorted_candidates_x[i+1]
+                    
+                    dx = p2[0] - p1[0]
+                    dy = p2[1] - p1[1]
+                    
+                    if abs(dx) < 1e-6: # 수직선인 경우
+                        segment_slopes.append(999.0)
+                    else:
+                        segment_slopes.append(dy / dx)
+                
+                # 계산된 선분 기울기들의 절대값 평균을 사용
+                if segment_slopes:
+                    trend_slope_abs = sum(abs(s) for s in segment_slopes) / len(segment_slopes)
+
+            slope_threshold = params['slope_threshold']
+
+            if trend_slope_abs > slope_threshold:
+                best_next_point = max(candidates, key=lambda p: p[1])
+                selection_reason = f"y-value (segment slope {trend_slope_abs:.2f} > {slope_threshold:.2f})"
+            else:
+                best_next_point = min(candidates, key=lambda p: math.dist(current_point, p))
+                selection_reason = f"Euclidean distance (segment slope {trend_slope_abs:.2f} <= {slope_threshold:.2f})"
+
+            if len(candidates) >= 1:
+                log_entry = {
+                    'current_point': current_point,
+                    'candidates': candidates,
+                    'selection': best_next_point,
+                    'reason': selection_reason,
+                    'trend_slope': trend_slope_abs,
+                    'threshold': slope_threshold
+                }
+                debug_log.append(log_entry)
+
             sorted_points.append(best_next_point)
             remaining_points.remove(best_next_point)
             remaining_points = [p for p in remaining_points if math.dist(p, best_next_point) > 2]
             current_point = best_next_point
+            
+        if debug_log:
+            final_indices = {tuple(map(int, p)): i + 1 for i, p in enumerate(sorted_points)}
+            print("=" * 80)
+            print(f"============== [Frame {frame_idx}] Sorting Decision Details ==============")
+            for i, entry in enumerate(debug_log):
+                print(f"\n--- Decision Step {i + 1} ---")
+                
+                step_current_point = entry['current_point']
+                
+                current_p_int = tuple(map(int, step_current_point))
+                current_idx = final_indices.get(current_p_int, 'N/A')
+                print(f"[*] Current Point: {current_idx} {current_p_int}")
+                
+                trend_slope_val = entry['trend_slope']
+                threshold = entry['threshold']
+                # ==================== [수정] 로그 출력 문구 변경 ====================
+                print(f"    - Candidates' Avg Segment Slope: {trend_slope_val:.2f}, Threshold: {threshold:.2f}")
+
+                print("    - Candidates:")
+                sorted_candidates = sorted(entry['candidates'], key=lambda c: math.dist(step_current_point, c))
+                for p in sorted_candidates:
+                    p_int = tuple(map(int, p))
+                    p_idx = final_indices.get(p_int, 'N/A')
+                    dist = math.dist(step_current_point, p)
+                    dx = p[0] - step_current_point[0]
+                    dy = p[1] - step_current_point[1]
+                    slope_str = f"{(dy/dx):.2f}" if dx != 0 else "inf"
+                    print(f"        -> Point {p_idx} {p_int}, Distance: {dist:.2f}, Slope: {slope_str}")
+
+                selected_p_int = tuple(map(int, entry['selection']))
+                selected_idx = final_indices.get(selected_p_int, 'N/A')
+                reason = entry['reason']
+                print(f"    - Selection Criterion: {reason}")
+                print(f"    - Final Selection: Point {selected_idx} {selected_p_int}")
+
+            print("=" * 80)
+        
+        if len(sorted_points) >= 2:
+            indices_to_remove = set()
+            for i in range(len(sorted_points) - 1):
+                p1 = sorted_points[i]
+                p2 = sorted_points[i+1]
+
+                if abs(p1[0] - p2[0]) >= params['x_dist_thresh']:
+                    dist_p1_to_edge = min(p1[0], frame_width - p1[0])
+                    dist_p2_to_edge = min(p2[0], frame_width - p2[0])
+
+                    if dist_p1_to_edge < dist_p2_to_edge:
+                        indices_to_remove.add(i)
+                    else:
+                        indices_to_remove.add(i + 1)
+            
+            if indices_to_remove:
+                original_count = len(sorted_points)
+                sorted_points = [p for i, p in enumerate(sorted_points) if i not in indices_to_remove]
+                self.get_logger().info(f"Filtered {original_count - len(sorted_points)} horizontal outlier(s).")
+            
         return sorted_points
-    
+
     def _get_line_bbox_intersections(self, line_coords, bbox_coords):
         lx1, ly1, lx2, ly2 = line_coords
         xmin, ymin, xmax, ymax = bbox_coords
@@ -467,7 +630,6 @@ class CenterlaneTracer(Node):
                     base_path = list(zip(x_new, y_new))
                 else: base_path = points
             except (ValueError, np.linalg.LinAlgError) as e:
-                # self.get_logger().warn(f"Spline curve fitting failed: {e}. Falling back to linear.")
                 base_path = points
         elif mode == 'linear': base_path = points
         else:
@@ -478,9 +640,11 @@ class CenterlaneTracer(Node):
             return self._extend_path_to_boundaries(base_path, frame_height, frame_width)
         else: return base_path
 
-    def visualize_results(self, frame, detections, sorted_points, curve_points, lines_to_draw, params, final_decision_text):
+    def visualize_results(self, frame, detections, vehicle_detections, sorted_points, curve_points, lines_to_draw, params, final_decision_text, frame_idx, all_center_lanes):
         output_frame = frame.copy()
         
+        cv2.putText(output_frame, f"Frame: {frame_idx}", (20, 80), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2, cv2.LINE_AA)
+
         if final_decision_text:
             cv2.putText(output_frame, final_decision_text, (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2, cv2.LINE_AA)
             
@@ -488,9 +652,15 @@ class CenterlaneTracer(Node):
             for det in detections:
                 x1, y1, x2, y2 = map(int, [det.xmin, det.ymin, det.xmax, det.ymax])
                 cv2.rectangle(output_frame, (x1, y1), (x2, y2), (0, 255, 0), 1)
+
+            for vehicle_det in vehicle_detections:
+                vx1, vy1, vx2, vy2 = map(int, [vehicle_det.xmin, vehicle_det.ymin, vehicle_det.xmax, vehicle_det.ymax])
+                cv2.rectangle(output_frame, (vx1, vy1), (vx2, vy2), (255, 0, 0), 2)
+                filter_zone_y = int(vy1 + (vy2 - vy1) * 0.7)
+                cv2.line(output_frame, (vx1, filter_zone_y), (vx2, filter_zone_y), (0, 0, 255), 1)
+        
         if params['draw_hough']:
             for line in lines_to_draw:
-                # [수정] 라인을 그릴 때 점이 하나만 있을 경우 에러가 나지 않도록 방어 코드 추가
                 if len(line) >= 2:
                     pt1, pt2 = tuple(map(int, line[0])), tuple(map(int, line[1]))
                     cv2.line(output_frame, pt1, pt2, (255, 0, 0), 2)

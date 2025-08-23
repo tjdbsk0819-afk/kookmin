@@ -74,20 +74,20 @@ class IntegratedStanleyController(Node):
         self.k_curve = 1.2
         self.k_obstacle = 1.2
 
-        self.speed_straight = 35.0
+        self.speed_straight = 30.0
         self.speed_curve = 20.0
 
         # ==============================================================
         #                   Obstacle Follower 파라미터
         # ==============================================================
     
-        self.TARGET_TIME_GAP = 5.0 # 원래 10임
+        self.TARGET_TIME_GAP = 8.0 # 원래 10임
         self.OBSTACLE_DETECTION_THRESHOLD = 5.0
         self.CURVE_OVERTAKE_THRESHOLD_M = 1.0
         self.KP_SPEED_CONTROL = 0.5
         self.MIN_SPEED = 2.0
-        self.ACCEL_STEP = 0.4
-        self.DECEL_STEP = 1.0
+        self.ACCEL_STEP = 1.0
+        self.DECEL_STEP = 2.0
 
         # ==============================================================
         #                       상태 변수들
@@ -172,8 +172,9 @@ class IntegratedStanleyController(Node):
     # ==============================================================
     def calculate_final_speed(self, target_speed):
             is_in_curve = self.curve_state.lower() == 'curve'
-            # condition1 = is_in_curve and self.is_obstacle_detected 
-            condition1 = is_in_curve and self.is_obstacle_detected and self.relative_distance > self.CURVE_OVERTAKE_THRESHOLD_M
+            condition1 = is_in_curve and self.is_obstacle_detected 
+            # 곡선 추월 금지는 위쪽 꺼를, 곡선 추월은 아래쪽 꺼를 써주세요
+            # condition1 = is_in_curve and self.is_obstacle_detected and self.relative_distance > self.CURVE_OVERTAKE_THRESHOLD_M
             condition2 = self.detected_vehicle_count >= 2
             self.condition_to_follow = condition1 or condition2
 
@@ -247,7 +248,14 @@ class IntegratedStanleyController(Node):
         else:
             self.current_k = self.k_curve if self.curve_state == 'Curve' else self.k_straight
 
-        final_speed, speed_status = self.calculate_final_speed(target_speed)
+        # 플래너로부터 Emergency Stop 신호(distance == 0.0)를 받았는지 확인
+        if self.relative_distance == 0.0:
+            final_speed = 0.0
+            speed_status = "🚨 EMERGENCY STOP"
+        else:
+            # 평소에는 기존 속도 계산 로직을 따름
+            final_speed, speed_status = self.calculate_final_speed(target_speed)
+        
         self.current_speed = final_speed
 
         motor_msg = Float32MultiArray()

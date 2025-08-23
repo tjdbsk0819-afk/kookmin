@@ -415,7 +415,7 @@ class Lane_Detector(Node):
         cv2.putText(display_img, error_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
         
         # 최종 결과 창 표시
-        cv2.imshow('Result on Original Frame', display_img)
+        # cv2.imshow('Result on Original Frame', display_img)
 
     def show_roi_region(self, img, src, show=False):
         if show:
