@@ -244,7 +244,7 @@ class CenterlaneTracer(Node):
         ]
 
         center_lane_detections = [
-            det for det in all_center_lane_detections if det.confidence >= 0.4
+            det for det in all_center_lane_detections if det.confidence >= 0.0
         ]
         
         lanes_to_keep = []

@@ -42,7 +42,7 @@ class TargetLanePlanner(Node):
 
         self.ULTAR_THRESHOLD = 30
         self.ULTAR_BACK_THRESHOLD = 50
-        self.OVERTAKE_THRESHOLD_M = 5.0
+        self.OVERTAKE_THRESHOLD_M = 4.0
         self.CURVE_OVERTAKE_THRESHOLD_M = 1.0
         self.MULTI_VEHICLE_OVERTAKE_GAP_M = 1.2
         self.driving_state = "CENTER_DRIVING"  # "CENTER_DRIVING" or "OVERTAKING"
@@ -55,6 +55,16 @@ class TargetLanePlanner(Node):
         self.E_STOP_DISTANCE_M = 0.5  # 급정지를 발동할 거리 (m)
         self.E_STOP_X_MIN = 50     # 급정지를 감지할 전방 카메라 x좌표 (최소)
         self.E_STOP_X_MAX = 600   # 급정지를 감지할 전방 카메라 x좌표 (최대)
+
+        self.E_STOP_RECT_X_MIN = 280
+        self.E_STOP_RECT_X_MAX = 360
+        self.E_STOP_RECT_Y_MIN = 260
+        self.E_STOP_RECT_Y_MAX = 400
+        self.E_STOP_RECT_PIXEL_COUNT_THRESHOLD = 3
+
+        self.PROXIMITY_THRESHOLD_M = 0.6
+        self.smoothed_obstacle_position = 0.0  # -1 (left) ~ +1 (right) 사이의 값을 가짐
+        self.EMA_ALPHA = 0.3  # 스무딩 강도 (0.1: 매우 부드러움, 0.9: 매우 민감)
 
         self.get_logger().info('🎯 Target Lane Planner has been started!')
 
@@ -70,22 +80,20 @@ class TargetLanePlanner(Node):
             img_pts, _ = cv2.projectPoints(cam_pts, np.zeros(3), np.zeros(3), self.mtx, None)
             img_pts = img_pts.squeeze(axis=1)
         has_curve = curve_msg and len(curve_msg.points) >= 2
+
         if has_curve:
             curve_points = np.array([[p.x, p.y] for p in curve_msg.points])
             sorted_indices = np.argsort(curve_points[:, 1])
             curve_x_coords, curve_y_coords = curve_points[sorted_indices, 0], curve_points[sorted_indices, 1]
+
         for det in detections:
             xmin, ymin, xmax, ymax = map(int, [det.xmin, det.ymin, det.xmax, det.ymax])
-            position_str = "unknown"
-            if has_curve:
-                bbox_center_x, bbox_center_y = (xmin + xmax) / 2, (ymin + ymax) / 2
-                lane_x_at_bbox_y = np.interp(bbox_center_y, curve_y_coords, curve_x_coords)
-                position_str = "left" if bbox_center_x < lane_x_at_bbox_y else "right"
-
+            position_str_final = "unknown"
             avg_distance = -1.0
+            points_in_path_count = 0     
 
-            points_in_path_count = 0
 
+            # ================================ LiDAR 포인트 클라우드 클러스터링 ================================
             if img_pts.shape[0] > 0:
                 indices = np.where((img_pts[:, 0] >= xmin) & (img_pts[:, 0] < xmax) & (img_pts[:, 1] >= ymin) & (img_pts[:, 1] < ymax))[0]
                 if len(indices) > 2: # 최소 5개 이상의 포인트가 있을 때만 클러스터링 수행
@@ -93,22 +101,7 @@ class TargetLanePlanner(Node):
 
                     dbscan = DBSCAN(eps=0.3, min_samples=3)
                     clusters = dbscan.fit_predict(points_in_bbox)
-
                     img_pts_in_bbox = img_pts[indices]
-                    # 시각화를 위한 색상 리스트 (BGR 순서)
-                    viz_colors = [(0, 0, 255), (0, 255, 255), (255, 0, 255), (255, 255, 0), (0, 128, 255)]
-
-                    # clusters 배열을 순회하며 클러스터링된 포인트만 그리기
-                    for i, cluster_label in enumerate(clusters):
-                        # 노이즈(-1)가 아닌 포인트만 시각화합니다.
-                        if cluster_label != -1:
-                            # 클러스터 ID에 따라 색상을 순환하며 선택
-                            color = viz_colors[cluster_label % len(viz_colors)]
-                            # 해당 포인트의 2D 좌표
-                            point_2d = img_pts_in_bbox[i]
-                            # 이미지에 원 그리기
-                            cv2.circle(image, (int(point_2d[0]), int(point_2d[1])), 3, color, -1)
-                    
                     unique_labels = np.unique(clusters[clusters != -1])
 
                     if len(unique_labels) > 0:
@@ -140,7 +133,6 @@ class TargetLanePlanner(Node):
                         points_in_path_count = len(points_in_path)
 
                         # 5. 시각화: 가장 가까운 클러스터의 포인트들만 그립니다.
-                        img_pts_in_bbox = img_pts[indices]
                         points_to_draw = img_pts_in_bbox[clusters == closest_cluster_label]
                         for pt in points_to_draw:
                             # 가장 중요한 클러스터이므로 눈에 잘 띄게 빨간색으로 그립니다.
@@ -155,31 +147,121 @@ class TargetLanePlanner(Node):
                             for pt in img_pts_in_bbox:
                                 cv2.circle(image, (int(pt[0]), int(pt[1])), 2, (128, 128, 128), -1) # 실패: 회색
 
-            if avg_distance > 0 and position_str != "unknown":
-                processed_obstacles.append({'distance': avg_distance, 'position': position_str, 'xmin': xmin, 'ymin': ymin, 'points_in_path_count': points_in_path_count})
+            # ================================ LiDAR 포인트 클라우드 클러스터링 ================================
+
+            # ================================ 장애물 차량 State 판별 (외적) ================================
+            # 거리 계산이 성공했고, 중앙선 정보가 있을 때만 좌/우 판단 수행
+            if avg_distance > 0 and has_curve:
+                position_str_raw = "unknown"
+                # 거리에 따라 판단 로직을 전환
+                if avg_distance < self.PROXIMITY_THRESHOLD_M:
+                    # ====== Rule 2: 초근접 상황 (0.8m 미만) ======
+                    # 단순 x좌표 비교 로직으로 전환 (가장 직관적이고 확실함)
+                    self.get_logger().warn(f"Proximity Override! Dist: {avg_distance:.2f}m. Using X-coord comparison.")
+                    
+                    bbox_center_x = (xmin + xmax) / 2
+                    bbox_center_y = (ymin + ymax) / 2
+                    path_x_at_bbox_y = np.interp(bbox_center_y, curve_y_coords, curve_x_coords)
+                    
+                    position_str_raw = "right" if bbox_center_x > path_x_at_bbox_y else "left"
+
+                else:
+                    # ====== Rule 1: 일반적인 원거리 상황 ======
+                    # 안정적인 벡터 외적 로직 사용
+                    p_obs = np.array([(xmin + xmax) / 2, (ymin + ymax) / 2])
+                    p1 = np.array([w / 2, h - 1])
+                    path_x_at_obstacle_y = np.interp(ymax, curve_y_coords, curve_x_coords)
+                    p2 = np.array([path_x_at_obstacle_y, ymax])
+
+                    v_path = p2 - p1
+                    v_obs = p_obs - p1
+                    
+                    cross_product = v_path[0] * v_obs[1] - v_path[1] * v_obs[0]
+                    
+                    if cross_product > 0:
+                        position_str_raw = "right"
+                    elif cross_product < 0:
+                        position_str_raw = "left"
+
+
+                current_numeric_pos = 0.0
+                if position_str_raw == "left": current_numeric_pos = -1.0
+                elif position_str_raw == "right": current_numeric_pos = 1.0
+
+                self.smoothed_obstacle_position = (self.EMA_ALPHA * current_numeric_pos) + ((1 - self.EMA_ALPHA) * self.smoothed_obstacle_position)
+
+                # 3. 필터링된 값을 최종 위치로 변환 ('center' 상태 제거)
+                if self.smoothed_obstacle_position < -0.25:
+                    position_str_final = "left"
+                elif self.smoothed_obstacle_position > 0.25:
+                    position_str_final = "right"
+                else:
+                    position_str_final = "unknown" # 중간값은 'unknown'으로 처리
+
+                self.get_logger().info(f"Raw: {position_str_raw} -> Smoothed Val: {self.smoothed_obstacle_position:.2f} -> Final: {position_str_final}")
+
+            else:
+                # 거리 인식이 안 된 경우, 필터 값을 리셋하여 다음 탐지에 영향 없도록 함
+                self.smoothed_obstacle_position = 0.0
+                # position_str_final은 초기값인 "unknown"을 그대로 유지 
+            # ================================ 장애물 차량 State 판별 (외적) ================================
+
+            if position_str_final != "unknown":
+                processed_obstacles.append({'distance': avg_distance, 'position': position_str_final, 'xmin': xmin, 'ymin': ymin, 'points_in_path_count': points_in_path_count})
                 cv2.putText(image, f"{avg_distance:.1f}m", (xmin, ymin - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                cv2.putText(image, position_str, (xmin, ymin - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
-                
-        is_emergency = False
+                # 최종 필터링된 결과값을 화면에 표시
+                cv2.putText(image, position_str_final, (xmin, ymin - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 2)
+
+       # ================================ E_STOP ================================
+
+
+        cv2.rectangle(image, (self.E_STOP_RECT_X_MIN, self.E_STOP_RECT_Y_MIN), (self.E_STOP_RECT_X_MAX, self.E_STOP_RECT_Y_MAX), (0, 0, 255), 1)
+        is_pixel_emergency = False
+        if img_pts.shape[0] > 0 and len(detections) > 0:
+            points_in_danger_zone = img_pts[
+                (img_pts[:, 0] > self.E_STOP_RECT_X_MIN) & (img_pts[:, 0] < self.E_STOP_RECT_X_MAX) &
+                (img_pts[:, 1] > self.E_STOP_RECT_Y_MIN) & (img_pts[:, 1] < self.E_STOP_RECT_Y_MAX)
+            ]
+            
+            if len(points_in_danger_zone) > 0:
+                for det in detections:
+                    xmin, ymin, xmax, ymax = int(det.xmin), int(det.ymin), int(det.xmax), int(det.ymax)
+                    points_in_both_zones = points_in_danger_zone[
+                        (points_in_danger_zone[:, 0] > xmin) & (points_in_danger_zone[:, 0] < xmax) &
+                        (points_in_danger_zone[:, 1] > ymin) & (points_in_danger_zone[:, 1] < ymax)
+                    ]
+
+                    if len(points_in_both_zones) > self.E_STOP_RECT_PIXEL_COUNT_THRESHOLD:
+                        is_pixel_emergency = True
+                        self.get_logger().error(f"🚨 RECT E-STOP TRIGGER! Found {len(points_in_both_zones)} points in both E-Stop Rect and Vehicle BBox.")
+                        cv2.rectangle(image, (self.E_STOP_RECT_X_MIN, self.E_STOP_RECT_Y_MIN), (self.E_STOP_RECT_X_MAX, self.E_STOP_RECT_Y_MAX), (0, 0, 255), 3)
+                        cv2.rectangle(image, (xmin, ymin), (xmax, ymax), (0, 0, 255), 3)
+                        break
+
+        is_obstacle_emergency = False
         emergency_obstacle = None
         for obs in processed_obstacles:
             # 현재 나의 주행 경로 추정
             is_center_path = self.last_override_cmd == 'reset'
             is_left_path = self.last_override_cmd == 'go_left'
             is_right_path = self.last_override_cmd == 'go_right'
-            
+                
             # 충돌 경로에 있는지 확인
             # (예: 장애물이 왼쪽에 있는데, 내가 중앙이나 왼쪽으로 가려 할 때)
             collision_path = (obs['position'] == 'left' and (is_center_path or is_left_path)) or \
-                             (obs['position'] == 'right' and (is_center_path or is_right_path))
+                                (obs['position'] == 'right' and (is_center_path or is_right_path))
 
             # E-Stop 조건: 1.거리가 가깝고, 2.내 주행 경로 중앙에 있고, 3.충돌 방향일 때
             if obs['distance'] < self.E_STOP_DISTANCE_M and obs['points_in_path_count'] > 0 and collision_path:
-                is_emergency = True
+                is_obstacle_emergency = True
                 emergency_obstacle = obs
                 self.get_logger().error(f"🚨 E-STOP TRIGGER! Obstacle at {obs['distance']:.2f}m on a collision path.")
                 break # 하나라도 감지되면 즉시 중단
 
+        # ================================ E_STOP ================================
+
+
+        # ================================ 추월 로직 시작 ================================
 
         obstacle_msg = ObstacleState()
         target_obstacle = None
@@ -188,7 +270,6 @@ class TargetLanePlanner(Node):
 
         is_curve = curve_msg and curve_msg.state.lower() == 'curve'
 
-        # =======================> 수정된 상태 머신 로직 시작 <=========================
         # [상태 1] 기본 (CENTER_DRIVING)
         if self.driving_state == "CENTER_DRIVING":
             # [전환 조건 1] 차량 2대 이상 감지 (직선/커브 무관)
@@ -298,115 +379,6 @@ class TargetLanePlanner(Node):
                     self.get_logger().info(f"Time_Gap: Following closest vehicle at {target_obstacle['distance']:.1f}m.")
                 else:
                     self.get_logger().info("Time_Gap: Vehicle(s) detected, but no distance info. Driving straight.")
-        # =======================> 수정된 상태 머신 로직 끝 <=========================
-
-        # # ============================ 밑에는 확실한 곡선 추월 금지 로직 ======================
-        # # --------------- [전환 0] (Curve, 1), (Curve, 2) 의 경우 ---------------
-        # # --------------- 무조건 가장 가까운 차의 차선으로 변경 -> 측면 추돌 예방 -------
-        # # -- 발생 문제 : centerlane_tracer에서 Curve로 튀면 -> (Curve, 1)이 되어 버려서 추월하다가 장애물 차량의 차선으로 변경하여 측면 추돌해버릴 수도 있음. -----
-        # if is_curve and num_detected_vehicles >= 1 :
-        #     self.driving_state = "Time_Gap"
-        #     if processed_obstacles:
-        #         target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
-        #         current_override_cmd = 'go_left' if target_obstacle['position'] == 'right' else 'go_right'
-        #         self.get_logger().warn(f"(Curve, 1), (Curve, 2) Case : Target at {target_obstacle['distance']:.1f}m.")
-
-        # else:
-        # # ----------- 나머지 (Straight, 0), (Straight, 1), (Straight, 2), (Curve, 0) 의 경우를 결정 --------
-        #     # [상태 1] 기본 (CENTER_DRIVING)
-        #     if self.driving_state == "CENTER_DRIVING":
-
-        #         # --------------- [전환 1] (Straight, 2) 의 경우 ------------------
-        #         # --------------- 앞에 무조건 직선 구간에 두 대가 있으므로 측면 추돌을 생각할 필요가 X -> center로 달려도 됨.-----
-        #         if num_detected_vehicles >= 2:
-        #             self.driving_state = "Time_Gap"
-        #             self.get_logger().warn("STATE CHANGE: CENTER_DRIVING -> Time_Gap + (Straight, 2).")
-        #             if processed_obstacles:
-        #                 target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
-        #             current_override_cmd = 'reset'
-
-        #         # --------------- [전환 2] (Straight, 1) 의 경우 ------------------
-        #         elif num_detected_vehicles == 1 and processed_obstacles:
-        #             obstacle = processed_obstacles[0]
-        #             if obstacle['distance'] < self.OVERTAKE_THRESHOLD_M:
-        #                 self.driving_state = "OVERTAKING"
-        #                 self.is_passing_obstacle = False
-        #                 self.pass_complete_timer = None
-        #                 target_obstacle = obstacle
-        #                 current_override_cmd = 'go_left' if target_obstacle['position'] == 'right' else 'go_right' # 장애물 차량과 반대 차선으로 차선 변경
-        #                 self.get_logger().warn(f"STATE CHANGE: CENTER_DRIVING -> OVERTAKING ({current_override_cmd}).")
-        #             else: # 1대 있지만 멀리 있으면 중앙 주행 유지
-        #                 current_override_cmd = 'reset'
-
-        #         # --------------- [전환 3] (Straight, 0), (Curve, 0) 의 경우 ------------------       
-        #         else: # 감지된 차량이 없거나, 있어도 거리 측정을 못하면 중앙 주행 유지
-        #             current_override_cmd = 'reset'
-
-        #     # [상태 2] 추월 중 (OVERTAKING) + (Straight, 1)의 경우
-        #     elif self.driving_state == "OVERTAKING":
-        #         if processed_obstacles:
-        #             target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
-
-        #         current_override_cmd = self.last_override_cmd # 추월 중에는 차선 변경 명령 유지
-
-        #         # 1단계: 아직 장애물 옆을 지나치기 시작하지 않았을 때
-        #         if not self.is_passing_obstacle:
-        #             is_side_detected = (self.last_override_cmd == 'go_left' and right_ultra < self.ULTAR_THRESHOLD) or \
-        #                                (self.last_override_cmd == 'go_right' and left_ultra < self.ULTAR_THRESHOLD)
-        #             if is_side_detected:
-        #                 self.is_passing_obstacle = True
-        #                 self.get_logger().info("Side of obstacle detected. Now passing alongside.")
-        #             else:
-        #                 self.get_logger().info(f"Approaching side... L: {left_ultra}, R: {right_ultra}, LB: {left_back_ultra}, RB: {right_back_ultra}")
-                
-        #         # 2단계: 장애물 옆을 지나치고 있을 때
-        #         else:
-        #             is_side_cleared = (self.last_override_cmd == 'go_left' and right_ultra > self.ULTAR_THRESHOLD and right_back_ultra > self.ULTAR_BACK_THRESHOLD) or \
-        #                               (self.last_override_cmd == 'go_right' and left_ultra > self.ULTAR_THRESHOLD and left_back_ultra > self.ULTAR_BACK_THRESHOLD)
-
-        #             # 3단계: 장애물 끝을 통과하여 타이머를 시작해야 할 때
-        #             if is_side_cleared and self.pass_complete_timer is None:
-        #                 self.pass_complete_timer = self.get_clock().now()
-        #                 self.get_logger().info(f"Side of obstacle cleared. Starting {self.PASS_TIMER_DURATION_S}s safety timer.")
-                    
-        #             # 타이머가 시작되었다면, 시간이 다 지났는지 확인
-        #             if self.pass_complete_timer is not None:
-        #                 duration = self.get_clock().now() - self.pass_complete_timer
-        #                 # 4단계: 타이머 종료 -> 추월 완료!
-        #                 if duration.nanoseconds / 1e9 > self.PASS_TIMER_DURATION_S:
-        #                     self.driving_state = "CENTER_DRIVING"
-        #                     current_override_cmd = 'reset'
-        #                     self.get_logger().warn("STATE CHANGE: OVERTAKING -> CENTER_DRIVING (Timer complete).")
-        #                     # 상태 변수 초기화
-        #                     self.is_passing_obstacle = False
-        #                     self.pass_complete_timer = None
-        #                 else:
-        #                     self.get_logger().info(f"Safety timer running... ({duration.nanoseconds / 1e9:.2f}s)")
-        #             # 아직 장애물 옆을 지나고 있는 경우 (통과 중 센서 값이 20 미만인 상태)
-        #             else:
-        #                  self.get_logger().info(f"Passing alongside... L: {left_ultra}, R: {right_ultra}, LB: {left_back_ultra}, RB: {right_back_ultra}")
-
-        #     # [상태 3] 다중 차량 추종 (Time_Gap) + (Straight, 2)의 경우
-        #     elif self.driving_state == "Time_Gap":
-        #         # 조건 1: 차량이 2대 미만이면 즉시 중앙 주행으로 복귀 (상태 탈출)
-        #         if num_detected_vehicles < 2:
-        #             self.driving_state = "CENTER_DRIVING"
-        #             current_override_cmd = 'reset'
-        #             self.get_logger().warn("STATE CHANGE: Time_Gap -> CENTER_DRIVING (Vehicles < 2).")
-                
-        #         # 조건 2: 2대 이상이면 Time_Gap 상태 유지
-        #         else:
-        #             # Time_Gap 상태에서는 항상 중앙 차선을 유지합니다.
-        #             current_override_cmd = 'reset'
-                    
-        #             # 거리 측정이 가능한 차량이 있다면, 그중 가장 가까운 차를 추종 타겟으로 삼습니다.
-        #             if processed_obstacles:
-        #                 target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
-        #                 self.get_logger().info(f"Time_Gap: Following closest vehicle at {target_obstacle['distance']:.1f}m.")
-        #             else:
-        #                 self.get_logger().info("Time_Gap: 2+ vehicles detected, but no distance info. Driving straight.")
-
-        # # =======================> 수정된 로직 끝 <=========================
 
         if current_override_cmd != self.last_override_cmd:
             cmd_msg = String(data=current_override_cmd)
@@ -415,22 +387,22 @@ class TargetLanePlanner(Node):
             self.last_override_cmd = current_override_cmd
             
         # ▼▼▼ 최종 메시지 발행 전, E-Stop 조건 확인 및 메시지 덮어쓰기 ▼▼▼
-        if is_emergency:
-            # E-Stop이 발동되면 다른 모든 상태를 무시하고 정지 신호를 보냄
+        if is_obstacle_emergency or is_pixel_emergency:
             obstacle_msg.distance_m = 0.0  # 컨트롤러에게 보내는 E-Stop 신호!
-            obstacle_msg.position = emergency_obstacle['position']
-            # 화면 표시용 상태 변경
+            
+            if is_obstacle_emergency:
+                obstacle_msg.position = emergency_obstacle['position']
+            else: # is_pixel_emergency인 경우
+                obstacle_msg.position = "pixel_danger" # E-Stop 원인을 명시
+
             if self.driving_state != "E_STOP":
                  self.get_logger().error("STATE CHANGE: ANY -> E_STOP")
                  self.driving_state = "E_STOP"
-
         else:
-            # E-Stop 상황에서 벗어났으면 중앙 주행으로 복귀
             if self.driving_state == "E_STOP":
                 self.driving_state = "CENTER_DRIVING"
                 self.get_logger().warn("STATE CHANGE: E_STOP -> CENTER_DRIVING (Obstacle Cleared).")
 
-            # 평소에는 상태 머신에 따라 결정된 타겟 장애물 정보를 보냄
             if target_obstacle:
                 obstacle_msg.distance_m = float(target_obstacle['distance'])
                 obstacle_msg.position = target_obstacle['position']
@@ -440,7 +412,6 @@ class TargetLanePlanner(Node):
                 obstacle_msg.distance_m = 999.0
                 obstacle_msg.position = "none"
 
-        # 모든 경우에 대해 차량 수(vehicle_count)를 업데이트하고 메시지를 발행합니다.
         obstacle_msg.vehicle_count = len(detections)
         self.obstacle_state_pub.publish(obstacle_msg)
         return image

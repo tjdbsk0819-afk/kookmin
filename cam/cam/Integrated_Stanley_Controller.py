@@ -82,7 +82,7 @@ class IntegratedStanleyController(Node):
         # ==============================================================
     
         self.TARGET_TIME_GAP = 4.0 # 원래 10임, 추월 때는 4.0
-        self.OBSTACLE_DETECTION_THRESHOLD = 5.0
+        self.OBSTACLE_DETECTION_THRESHOLD = 4.0
         self.CURVE_OVERTAKE_THRESHOLD_M = 0.8
         self.KP_SPEED_CONTROL = 0.5
         self.MIN_SPEED = 4.0
