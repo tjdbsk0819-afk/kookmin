@@ -145,9 +145,11 @@ class CenterlaneTracer(Node):
             'draw_numbers': True,
             'draw_hough': True,
             'draw_curve': True,
+
             'rmse_thresh': 30,
-            'history_size': 7,
-            'confidence_thresh': 10,
+            'history_size': 5,
+            'confidence_thresh': 5,
+
             'bottom_box_height_thresh': 10,
             'bottom_point_height_diff_thresh': 5,
             'angle_similarity_thresh': 20.0,

@@ -41,10 +41,10 @@ class TargetLanePlanner(Node):
         self.time_synchronizer.registerCallback(self.synchronized_callback)
 
         self.ULTAR_THRESHOLD = 30
-        self.ULTAR_BACK_THRESHOLD = 50
-        self.OVERTAKE_THRESHOLD_M = 4.0
+        self.ULTAR_BACK_THRESHOLD = 40
+        self.OVERTAKE_THRESHOLD_M = 2.5
         self.CURVE_OVERTAKE_THRESHOLD_M = 1.0
-        self.MULTI_VEHICLE_OVERTAKE_GAP_M = 1.2
+        self.MULTI_VEHICLE_OVERTAKE_GAP_M = 0.8
         self.driving_state = "CENTER_DRIVING"  # "CENTER_DRIVING" or "OVERTAKING"
         self.last_override_cmd = 'reset'
 
@@ -55,16 +55,22 @@ class TargetLanePlanner(Node):
         self.E_STOP_DISTANCE_M = 0.5  # 급정지를 발동할 거리 (m)
         self.E_STOP_X_MIN = 50     # 급정지를 감지할 전방 카메라 x좌표 (최소)
         self.E_STOP_X_MAX = 600   # 급정지를 감지할 전방 카메라 x좌표 (최대)
-
-        self.E_STOP_RECT_X_MIN = 280
-        self.E_STOP_RECT_X_MAX = 360
-        self.E_STOP_RECT_Y_MIN = 260
+        # ========================= 무조건 안 박음 =============================
+        self.E_STOP_RECT_X_MIN = 200
+        self.E_STOP_RECT_X_MAX = 400
+        self.E_STOP_RECT_Y_MIN = 270
         self.E_STOP_RECT_Y_MAX = 400
+        # # ========================= E-Stop 범위 작게 ==========================
+        # self.E_STOP_RECT_X_MIN = 260
+        # self.E_STOP_RECT_X_MAX = 380
+        # self.E_STOP_RECT_Y_MIN = 260
+        # self.E_STOP_RECT_Y_MAX = 400
+
         self.E_STOP_RECT_PIXEL_COUNT_THRESHOLD = 3
 
         self.PROXIMITY_THRESHOLD_M = 0.6
         self.smoothed_obstacle_position = 0.0  # -1 (left) ~ +1 (right) 사이의 값을 가짐
-        self.EMA_ALPHA = 0.3  # 스무딩 강도 (0.1: 매우 부드러움, 0.9: 매우 민감)
+        self.EMA_ALPHA = 0.5  # 스무딩 강도 (0.1: 매우 부드러움, 0.9: 매우 민감)
 
         self.get_logger().info('🎯 Target Lane Planner has been started!')
 
@@ -191,9 +197,9 @@ class TargetLanePlanner(Node):
                 self.smoothed_obstacle_position = (self.EMA_ALPHA * current_numeric_pos) + ((1 - self.EMA_ALPHA) * self.smoothed_obstacle_position)
 
                 # 3. 필터링된 값을 최종 위치로 변환 ('center' 상태 제거)
-                if self.smoothed_obstacle_position < -0.25:
+                if self.smoothed_obstacle_position < -0.1:
                     position_str_final = "left"
-                elif self.smoothed_obstacle_position > 0.25:
+                elif self.smoothed_obstacle_position > 0.1:
                     position_str_final = "right"
                 else:
                     position_str_final = "unknown" # 중간값은 'unknown'으로 처리
@@ -379,6 +385,116 @@ class TargetLanePlanner(Node):
                     self.get_logger().info(f"Time_Gap: Following closest vehicle at {target_obstacle['distance']:.1f}m.")
                 else:
                     self.get_logger().info("Time_Gap: Vehicle(s) detected, but no distance info. Driving straight.")
+
+        # =======================> 추월 가능 로직 끝 <=========================
+
+        # # ============================ 밑에는 확실한 곡선 추월 금지 로직 ======================
+        # # --------------- [전환 0] (Curve, 1), (Curve, 2) 의 경우 ---------------
+        # # --------------- 무조건 가장 가까운 차의 차선으로 변경 -> 측면 추돌 예방 -------
+        # # -- 발생 문제 : centerlane_tracer에서 Curve로 튀면 -> (Curve, 1)이 되어 버려서 추월하다가 장애물 차량의 차선으로 변경하여 측면 추돌해버릴 수도 있음. -----
+        # if is_curve and num_detected_vehicles >= 1 :
+        #     self.driving_state = "Time_Gap"
+        #     if processed_obstacles:
+        #         target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
+        #         current_override_cmd = 'reset'
+        #         self.get_logger().warn(f"(Curve, 1), (Curve, 2) Case : Target at {target_obstacle['distance']:.1f}m.")
+
+        # else:
+        # # ----------- 나머지 (Straight, 0), (Straight, 1), (Straight, 2), (Curve, 0) 의 경우를 결정 --------
+        #     # [상태 1] 기본 (CENTER_DRIVING)
+        #     if self.driving_state == "CENTER_DRIVING":
+
+        #         # --------------- [전환 1] (Straight, 2) 의 경우 ------------------
+        #         # --------------- 앞에 무조건 직선 구간에 두 대가 있으므로 측면 추돌을 생각할 필요가 X -> center로 달려도 됨.-----
+        #         if num_detected_vehicles >= 2:
+        #             self.driving_state = "Time_Gap"
+        #             self.get_logger().warn("STATE CHANGE: CENTER_DRIVING -> Time_Gap + (Straight, 2).")
+        #             if processed_obstacles:
+        #                 target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
+        #             current_override_cmd = 'reset'
+
+        #         # --------------- [전환 2] (Straight, 1) 의 경우 ------------------
+        #         elif num_detected_vehicles == 1 and processed_obstacles:
+        #             obstacle = processed_obstacles[0]
+        #             if obstacle['distance'] < self.OVERTAKE_THRESHOLD_M:
+        #                 self.driving_state = "OVERTAKING"
+        #                 self.is_passing_obstacle = False
+        #                 self.pass_complete_timer = None
+        #                 target_obstacle = obstacle
+        #                 current_override_cmd = 'go_left' if target_obstacle['position'] == 'right' else 'go_right' # 장애물 차량과 반대 차선으로 차선 변경
+        #                 self.get_logger().warn(f"STATE CHANGE: CENTER_DRIVING -> OVERTAKING ({current_override_cmd}).")
+        #             else: # 1대 있지만 멀리 있으면 중앙 주행 유지
+        #                 current_override_cmd = 'reset'
+
+        #         # --------------- [전환 3] (Straight, 0), (Curve, 0) 의 경우 ------------------       
+        #         else: # 감지된 차량이 없거나, 있어도 거리 측정을 못하면 중앙 주행 유지
+        #             current_override_cmd = 'reset'
+
+        #     # [상태 2] 추월 중 (OVERTAKING) + (Straight, 1)의 경우
+        #     elif self.driving_state == "OVERTAKING":
+        #         if processed_obstacles:
+        #             target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
+
+        #         current_override_cmd = self.last_override_cmd # 추월 중에는 차선 변경 명령 유지
+
+        #         # 1단계: 아직 장애물 옆을 지나치기 시작하지 않았을 때
+        #         if not self.is_passing_obstacle:
+        #             is_side_detected = (self.last_override_cmd == 'go_left' and right_ultra < self.ULTAR_THRESHOLD) or \
+        #                                (self.last_override_cmd == 'go_right' and left_ultra < self.ULTAR_THRESHOLD)
+        #             if is_side_detected:
+        #                 self.is_passing_obstacle = True
+        #                 self.get_logger().info("Side of obstacle detected. Now passing alongside.")
+        #             else:
+        #                 self.get_logger().info(f"Approaching side... L: {left_ultra}, R: {right_ultra}, LB: {left_back_ultra}, RB: {right_back_ultra}")
+                
+        #         # 2단계: 장애물 옆을 지나치고 있을 때
+        #         else:
+        #             is_side_cleared = (self.last_override_cmd == 'go_left' and right_ultra > self.ULTAR_THRESHOLD and right_back_ultra > self.ULTAR_BACK_THRESHOLD) or \
+        #                               (self.last_override_cmd == 'go_right' and left_ultra > self.ULTAR_THRESHOLD and left_back_ultra > self.ULTAR_BACK_THRESHOLD)
+
+        #             # 3단계: 장애물 끝을 통과하여 타이머를 시작해야 할 때
+        #             if is_side_cleared and self.pass_complete_timer is None:
+        #                 self.pass_complete_timer = self.get_clock().now()
+        #                 self.get_logger().info(f"Side of obstacle cleared. Starting {self.PASS_TIMER_DURATION_S}s safety timer.")
+                    
+        #             # 타이머가 시작되었다면, 시간이 다 지났는지 확인
+        #             if self.pass_complete_timer is not None:
+        #                 duration = self.get_clock().now() - self.pass_complete_timer
+        #                 # 4단계: 타이머 종료 -> 추월 완료!
+        #                 if duration.nanoseconds / 1e9 > self.PASS_TIMER_DURATION_S:
+        #                     self.driving_state = "CENTER_DRIVING"
+        #                     current_override_cmd = 'reset'
+        #                     self.get_logger().warn("STATE CHANGE: OVERTAKING -> CENTER_DRIVING (Timer complete).")
+        #                     # 상태 변수 초기화
+        #                     self.is_passing_obstacle = False
+        #                     self.pass_complete_timer = None
+        #                 else:
+        #                     self.get_logger().info(f"Safety timer running... ({duration.nanoseconds / 1e9:.2f}s)")
+        #             # 아직 장애물 옆을 지나고 있는 경우 (통과 중 센서 값이 20 미만인 상태)
+        #             else:
+        #                  self.get_logger().info(f"Passing alongside... L: {left_ultra}, R: {right_ultra}, LB: {left_back_ultra}, RB: {right_back_ultra}")
+
+        #     # [상태 3] 다중 차량 추종 (Time_Gap) + (Straight, 2)의 경우
+        #     elif self.driving_state == "Time_Gap":
+        #         # 조건 1: 차량이 2대 미만이면 즉시 중앙 주행으로 복귀 (상태 탈출)
+        #         if num_detected_vehicles < 2:
+        #             self.driving_state = "CENTER_DRIVING"
+        #             current_override_cmd = 'reset'
+        #             self.get_logger().warn("STATE CHANGE: Time_Gap -> CENTER_DRIVING (Vehicles < 2).")
+                
+        #         # 조건 2: 2대 이상이면 Time_Gap 상태 유지
+        #         else:
+        #             # Time_Gap 상태에서는 항상 중앙 차선을 유지합니다.
+        #             current_override_cmd = 'reset'
+                    
+        #             # 거리 측정이 가능한 차량이 있다면, 그중 가장 가까운 차를 추종 타겟으로 삼습니다.
+        #             if processed_obstacles:
+        #                 target_obstacle = min(processed_obstacles, key=lambda obs: obs['distance'])
+        #                 self.get_logger().info(f"Time_Gap: Following closest vehicle at {target_obstacle['distance']:.1f}m.")
+        #             else:
+        #                 self.get_logger().info("Time_Gap: 2+ vehicles detected, but no distance info. Driving straight.")
+
+        # =======================> 확실한 추월 금지 로직 끝 <=========================
 
         if current_override_cmd != self.last_override_cmd:
             cmd_msg = String(data=current_override_cmd)
