@@ -238,19 +238,25 @@ class TargetLanePlanner(Node):
                     penetrating_slope = dy / dx if abs(dx) > 1e-6 else float('inf')
                     is_vertical_line = penetrating_slope == float('inf')
                     use_slope_logic = not is_top_bottom_only and is_significant_penetration and is_wide_bbox and not is_vertical_line and not penetrates_bottom_edge
-                    if use_slope_logic:
-                        self.get_logger().info(f"판단: 기울기 기반. Slope:{penetrating_slope:.2f}")
+                    
+                    # ========================= [수정된 부분 시작] ========================
+                    # use_slope_logic이 True여도, 거리가 0.8m 이하이면 강제로 점 기반 판단으로 변경
+                    if use_slope_logic and avg_distance > 0.8:
+                    # ========================= [수정된 부분 끝] ==========================
+                        self.get_logger().info(f"판단: 기울기 기반. Slope:{penetrating_slope:.2f}, Dist:{avg_distance:.2f}m")
                         position_str_raw = "right" if penetrating_slope < 0 else "left"
                         cv2.line(image, tuple(p_entry.astype(int)), tuple(p_exit.astype(int)), (0, 255, 255), 2)
                         if penetrating_slope >= 0: p_diag1, p_diag2 = (xmin, ymin), (xmax, ymax)
                         else: p_diag1, p_diag2 = (xmax, ymin), (xmin, ymax)
                         cv2.line(image, p_diag1, p_diag2, (255, 0, 255), 1)
                     else:
-                        if penetrates_bottom_edge: self.get_logger().info("판단: 점 비교 (하단면 관통).")
-                        else: self.get_logger().info("판단: 점 비교 (기타).")
+                        if penetrates_bottom_edge: self.get_logger().info(f"판단: 점 비교 (하단면 관통). Dist:{avg_distance:.2f}m")
+                        elif not use_slope_logic: self.get_logger().info(f"판단: 점 비교 (기타). Dist:{avg_distance:.2f}m")
+                        else: self.get_logger().info(f"판단: 점 비교 (거리 < 0.8m 강제). Dist:{avg_distance:.2f}m")
+                        
                         bbox_center_x = (xmin + xmax) / 2
                         bbox_center_y = (ymin + ymax) / 2
-                        # ========================= [수정된 부분 시작] ========================
+
                         path_comparison_point = None
                         # [예외 상황] BBox 중심이 경로 Y 범위 밖 (외삽 발생 구간)
                         if len(curve_y_coords) < 2 or bbox_center_y < curve_y_coords[0] or bbox_center_y > curve_y_coords[-1]:
@@ -281,13 +287,13 @@ class TargetLanePlanner(Node):
                         cv2.circle(image, (int(bbox_center_x), int(bbox_center_y)), 5, (0, 0, 255), -1)
                         cv2.circle(image, tuple(path_comparison_point.astype(int)), 5, (255, 255, 0), -1)
                         cv2.line(image, (int(bbox_center_x), int(bbox_center_y)), tuple(path_comparison_point.astype(int)), (255, 255, 255), 1)
-                        # ========================= [수정된 부분 끝] ==========================
+
                 else:
                     area_display_str = "No Intersection"
                     self.get_logger().info("판단: 점 비교 (교차점 부족).")
                     bbox_center_x = (xmin + xmax) / 2
                     bbox_center_y = (ymin + ymax) / 2
-                    # ========================= [수정된 부분 시작] ========================
+
                     # 교차점 없을 때도 외삽 문제 해결 로직 동일하게 적용
                     path_comparison_point = None
                     if len(curve_y_coords) < 2 or bbox_center_y < curve_y_coords[0] or bbox_center_y > curve_y_coords[-1]:
@@ -317,7 +323,7 @@ class TargetLanePlanner(Node):
                     cv2.circle(image, (int(bbox_center_x), int(bbox_center_y)), 5, (0, 0, 255), -1)
                     cv2.circle(image, tuple(path_comparison_point.astype(int)), 5, (255, 255, 0), -1)
                     cv2.line(image, (int(bbox_center_x), int(bbox_center_y)), tuple(path_comparison_point.astype(int)), (255, 255, 255), 1)
-                    # ========================= [수정된 부분 끝] ==========================
+
 
             if avg_distance > 0:
                 obstacle_data = {
@@ -337,7 +343,6 @@ class TargetLanePlanner(Node):
             target_obstacle_for_decision = min(processed_obstacles, key=lambda x: x['distance'])
             raw_pos_of_target = target_obstacle_for_decision['position_raw']
             
-            # ========================= [수정된 부분 시작] ========================
             # 차선 판단 로직이 수행되지 않아 'unknown'인 경우, 거리를 확인하여 fallback 여부 결정
             if raw_pos_of_target == "unknown":
                 # 장애물이 판단 유효 거리 내에 있을 때만 fallback 로직(이전 값 사용)을 적용
@@ -348,7 +353,6 @@ class TargetLanePlanner(Node):
             else:
                 # 새로운 차선 정보가 유효하면(left/right), 최신 정보로 업데이트
                 self.last_closest_obstacle_lane = raw_pos_of_target
-            # ========================= [수정된 부분 끝] ==========================
 
             current_numeric_pos = 0.0
             if raw_pos_of_target == "left": current_numeric_pos = -1.0
@@ -689,8 +693,14 @@ class TargetLanePlanner(Node):
             img_pts = img_pts_raw.squeeze(axis=1)
                 
         if curve_msg.points:
+            # 주행 경로를 선으로 그립니다 (기존 코드)
             curve_pts = np.array([[p.x, p.y] for p in curve_msg.points], dtype=np.int32).reshape((-1, 1, 2))
             cv2.polylines(frame, [curve_pts], isClosed=False, color=(255, 0, 255), thickness=2)
+            
+            # 주행 경로를 구성하는 실제 점들을 원으로 그립니다
+            for p in curve_msg.points:
+                cv2.circle(frame, (int(p.x), int(p.y)), 3, (0, 255, 255), -1) # 노란색(-1: 채워진 원)
+
         if curve_msg.state:
             cv2.putText(frame, f"Lane State: {curve_msg.state}", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
         vehicle_count = sum(1 for det in yolo_msg.detections if det.class_name == 'obstacle_vehicle')
