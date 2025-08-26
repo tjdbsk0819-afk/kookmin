@@ -196,7 +196,7 @@ class Yolo_Node(Node):
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
         if self.show_visualization:
-            cv2.imshow('yolo_node - annotated_frame', annotated_frame)
+            # cv2.imshow('yolo_node - annotated_frame', annotated_frame)
             cv2.waitKey(1)
 
         detections_msg.header.stamp = msg.header.stamp

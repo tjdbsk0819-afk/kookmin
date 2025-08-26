@@ -30,7 +30,7 @@ class CheckerBoard_Detector(Node):
         # ------------------------------------
 
         # --- 파라미터 선언 ---
-        self.declare_parameter('enable_visualization', True)
+        self.declare_parameter('enable_visualization', False)
         self.declare_parameter('show_class_name', False)
         self.declare_parameter('show_confidence', False)
         self.declare_parameter('bbox_area_threshold', 4000)
@@ -208,7 +208,7 @@ class CheckerBoard_Detector(Node):
                 cv2.rectangle(frame, (xmin, label_ymin - label_height - 10), (xmin + label_width, label_ymin - baseline), color, cv2.FILLED)
                 cv2.putText(frame, label, (xmin, label_ymin - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 1)
 
-        cv2.imshow(self.result_win_name, frame)
+        # cv2.imshow(self.result_win_name, frame)
         cv2.waitKey(1)
 
 def main(args=None):

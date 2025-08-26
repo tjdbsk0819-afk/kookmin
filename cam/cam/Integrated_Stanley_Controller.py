@@ -68,13 +68,13 @@ class IntegratedStanleyController(Node):
         self.max_delta_angle = 15.0
         self.window = 1
 
-        self.steering_threshold = 3.0
+        self.steering_threshold = 5.0
 
         self.k_straight = 1.0
         self.k_curve = 1.2
         self.k_obstacle = 1.8
 
-        self.speed_straight = 35.0
+        self.speed_straight = 40.0
         self.speed_curve = 20.0
 
         # ==============================================================
@@ -173,9 +173,9 @@ class IntegratedStanleyController(Node):
     # ==============================================================
     def calculate_final_speed(self, target_speed):
             is_in_curve = self.curve_state.lower() == 'curve'
-            # condition1 = is_in_curve and self.is_obstacle_detected 
+            condition1 = is_in_curve and self.is_obstacle_detected 
             # # 곡선 추월 금지는 위쪽 꺼를, 곡선 추월은 아래쪽 꺼를 써주세요
-            condition1 = is_in_curve and self.is_obstacle_detected and self.relative_distance > self.CURVE_OVERTAKE_THRESHOLD_M
+            # condition1 = is_in_curve and self.is_obstacle_detected and self.relative_distance > self.CURVE_OVERTAKE_THRESHOLD_M
             condition2 = self.detected_vehicle_count >= 2
             self.condition_to_follow = condition1 or condition2
 

@@ -381,8 +381,8 @@ class Lane_Detector(Node):
 
         if self.override_target_lane:
             cv2.putText(img, f'Override: {self.override_target_lane}', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        if show:
-            cv2.imshow('marked_lane_point', img)
+        # if show:
+            # cv2.imshow('marked_lane_point', img)
 
     def visualize_results_on_original_frame(self, original_img, roi_poly, curve_msg, lane_center_bev, curve_center_bev, show=False):
         """
