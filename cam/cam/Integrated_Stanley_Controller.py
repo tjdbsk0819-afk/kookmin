@@ -88,7 +88,7 @@ class IntegratedStanleyController(Node):
         self.KP_SPEED_CONTROL = 0.5
         self.MIN_SPEED = 4.0
         self.ACCEL_STEP = 1.0
-        self.DECEL_STEP = 2.0
+        self.DECEL_STEP = 3.0
 
         # ==============================================================
         #                       상태 변수들
@@ -173,9 +173,9 @@ class IntegratedStanleyController(Node):
     # ==============================================================
     def calculate_final_speed(self, target_speed):
             is_in_curve = self.curve_state.lower() == 'curve'
-            condition1 = is_in_curve and self.is_obstacle_detected 
+            # condition1 = is_in_curve and self.is_obstacle_detected 
             # # 곡선 추월 금지는 위쪽 꺼를, 곡선 추월은 아래쪽 꺼를 써주세요
-            # condition1 = is_in_curve and self.is_obstacle_detected and self.relative_distance > self.CURVE_OVERTAKE_THRESHOLD_M
+            condition1 = is_in_curve and self.is_obstacle_detected and self.relative_distance > self.CURVE_OVERTAKE_THRESHOLD_M
             condition2 = self.detected_vehicle_count >= 2
             self.condition_to_follow = condition1 or condition2
 

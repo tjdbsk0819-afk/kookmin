@@ -95,7 +95,7 @@ class Lane_Detector(Node):
         self.cluster_match_threshold = 70
         self.lane_update_weight = 0.7
         self.prediction_weight = 0.3
-        self.max_lane_delta = 50
+        self.max_lane_delta = 80
         self.center_correction_weight = 0.6
         # <<< 1. 조건부 보정을 위한 임계값 추가
         self.center_agreement_threshold = 80 # 단위: 픽셀, 노란 점과 커브의 오차 임계값. 
@@ -381,8 +381,8 @@ class Lane_Detector(Node):
 
         if self.override_target_lane:
             cv2.putText(img, f'Override: {self.override_target_lane}', (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-        # if show:
-            # cv2.imshow('marked_lane_point', img)
+        if show:
+            cv2.imshow('marked_lane_point', img)
 
     def visualize_results_on_original_frame(self, original_img, roi_poly, curve_msg, lane_center_bev, curve_center_bev, show=False):
         """

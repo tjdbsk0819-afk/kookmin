@@ -30,7 +30,7 @@ class Yolo_Node(Node):
 
         # --- 파라미터 선언 (요청사항) ---
         # 신뢰도 임계값
-        self.declare_parameter('class_1_conf_threshold', 0.1) #0.75
+        self.declare_parameter('class_1_conf_threshold', 0.5) #0.75
         self.class_1_conf_threshold = self.get_parameter('class_1_conf_threshold').get_parameter_value().double_value
         self.get_logger().info(f"Confidence threshold for class ID 1 set to: {self.class_1_conf_threshold}")
 
