@@ -1,5 +1,7 @@
 # Kookmin University Autonomous Driving Contest 2025
 
+![1st_prize.jpg](/1st_prize.jpg)
+
 ## 1. Project Overview
 
 This repository contains the ROS 2 source code for the 2025 Kookmin University Autonomous Driving Contest. The software is designed to perform lane-keeping, dynamic obstacle avoidance, and mission-based driving.
