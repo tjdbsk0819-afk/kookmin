@@ -12,6 +12,7 @@ from collections import deque
 from custom_interfaces.msg import XycarState, Detections, Curve
 import message_filters
 from std_srvs.srv import Trigger
+from datetime import datetime
 
 # ===============================
 # 13pixels = 2.5cm (차선 폭)
@@ -46,6 +47,12 @@ class Lane_Detector(Node):
             '/start_track_driving',
             self.start_service_callback
         )
+
+        # <<< [추가] 상태 표시창 관련 초기화
+        self.last_sync_time = None
+        self.sync_timeout_duration = 0.5  # seconds
+        self.status_timer = self.create_timer(0.05, self.update_status_display) # 20Hz 업데이트
+        # >>>
 
         self.bridge = CvBridge()
         self.get_logger().info('🛣️  Lane_Detector Node Started Successfully❗')
@@ -117,6 +124,50 @@ class Lane_Detector(Node):
             response.success = False
             response.message = 'Already active.'
         return response
+
+    # <<< [추가] 새로운 상태 표시창을 업데이트하는 콜백 함수
+    def update_status_display(self):
+        # 상태 표시창 크기 및 폰트 설정
+        display_height = 100
+        display_width = 450
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        font_color = (255, 255, 255)
+        thickness = 1
+        
+        is_timeout = True
+        
+        # 마지막 싱크 시간부터 현재까지의 경과 시간 확인
+        if self.last_sync_time is not None:
+            elapsed_time = (self.get_clock().now() - self.last_sync_time).nanoseconds / 1e9
+            if elapsed_time <= self.sync_timeout_duration:
+                is_timeout = False
+
+        # 배경색 설정
+        if is_timeout:
+            # 타임아웃 발생 시 배경을 빨간색으로
+            status_img = np.full((display_height, display_width, 3), (0, 0, 200), dtype=np.uint8)
+        else:
+            # 정상 상태일 때 배경을 검은색으로
+            status_img = np.zeros((display_height, display_width, 3), dtype=np.uint8)
+            
+        # 현재 시간 표시
+        now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        cv2.putText(status_img, f'Current Time: {now_str}', (10, 30), font, font_scale, font_color, thickness, cv2.LINE_AA)
+        
+        # 마지막 싱크 시간 표시
+        if self.last_sync_time is not None:
+            last_sync_sec = self.last_sync_time.nanoseconds / 1e9
+            last_sync_str = datetime.fromtimestamp(last_sync_sec).strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        else:
+            last_sync_str = "N/A"
+            
+        cv2.putText(status_img, f'Last Sync Time: {last_sync_str}', (10, 70), font, font_scale, font_color, thickness, cv2.LINE_AA)
+
+        cv2.imshow('Sync Status', status_img)
+        # 이 창이 독립적으로 업데이트되도록 waitKey를 호출해야 함
+        cv2.waitKey(1)
+    # >>>
 
     def get_birds_eye_view(self, image):
         height, width = image.shape[:2]
@@ -423,6 +474,9 @@ class Lane_Detector(Node):
             cv2.imshow('roi region on the undistorted frame',img)
 
     def sync_callback(self, img_msg, detections_msg, curve_msg):
+        # <<< [수정] 마지막 싱크 시간 기록
+        self.last_sync_time = self.get_clock().now()
+        # >>>
         if not self.is_active: return
             
         frame = self.bridge.imgmsg_to_cv2(img_msg, 'bgr8')

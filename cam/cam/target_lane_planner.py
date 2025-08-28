@@ -56,15 +56,15 @@ class TargetLanePlanner(Node):
         self.E_STOP_X_MIN = 50     # 급정지를 감지할 전방 카메라 x좌표 (최소)
         self.E_STOP_X_MAX = 600   # 급정지를 감지할 전방 카메라 x좌표 (최대)
         # ========================= 무조건 안 박음 =============================
-        # self.E_STOP_RECT_X_MIN = 200
-        # self.E_STOP_RECT_X_MAX = 400
+        self.E_STOP_RECT_X_MIN = 200
+        self.E_STOP_RECT_X_MAX = 400
+        self.E_STOP_RECT_Y_MIN = 260
+        self.E_STOP_RECT_Y_MAX = 400
+        # # ========================= E-Stop 범위 작게 ==========================
+        # self.E_STOP_RECT_X_MIN = 280
+        # self.E_STOP_RECT_X_MAX = 360
         # self.E_STOP_RECT_Y_MIN = 260
         # self.E_STOP_RECT_Y_MAX = 400
-        # # ========================= E-Stop 범위 작게 ==========================
-        self.E_STOP_RECT_X_MIN = 280
-        self.E_STOP_RECT_X_MAX = 360
-        self.E_STOP_RECT_Y_MIN = 300
-        self.E_STOP_RECT_Y_MAX = 400
 
         self.E_STOP_RECT_PIXEL_COUNT_THRESHOLD = 3
 

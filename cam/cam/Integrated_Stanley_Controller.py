@@ -83,8 +83,8 @@ class IntegratedStanleyController(Node):
     
         self.TARGET_TIME_GAP = 4.0 # 원래 10임, 추월 때는 4.0
         self.OBSTACLE_DETECTION_THRESHOLD = 4.0
-        self.CURVE_OVERTAKE_THRESHOLD_M = 1.2 # 추월 하고 싶으면 쓰면 됨
-        # self.CURVE_OVERTAKE_THRESHOLD_M = 0.8
+        # self.CURVE_OVERTAKE_THRESHOLD_M = 1.2 # 추월 하고 싶으면 쓰면 됨
+        self.CURVE_OVERTAKE_THRESHOLD_M =1.0
         self.KP_SPEED_CONTROL = 0.5
         self.MIN_SPEED = 4.0
         self.ACCEL_STEP = 1.0
