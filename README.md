@@ -2,9 +2,9 @@
 
 ![1st_prize.jpg](/1st_prize.jpg)
 
-![signdetector.mp4](/signdetector.mp4)
+![Sign Detector demonstration](/signdetector.gif)
 
-![track_driving.mp4](/track_driving.mp4)
+![Track Driving demonstration](/track_driving.gif)
 
 ## 1. Project Overview
 
