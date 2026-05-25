@@ -1,3 +1,0 @@
-[submodule "xycar_device/xycar_lidar/YDLidar-SDK"]
-	path = xycar_device/xycar_lidar/YDLidar-SDK
-	url = https://github.com/YDLIDAR/YDLidar-SDK.git
